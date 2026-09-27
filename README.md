@@ -162,9 +162,9 @@ Other options: `--timeout 60` (network timeout in seconds), `-v` (debug log, key
 | 0 | Verdict printed (even a partial one, e.g. `INSUFFICIENT_DATA`) |
 | 1 | Unexpected error |
 | 2 | Bad arguments, or `NANSEN_API_KEY` missing |
-| 3 | Token symbol not found on that chain (try `--address`) |
+| 3 | The search worked but found no token with that symbol on that chain (try `--address`) |
 | 4 | Nansen rejected the API key (HTTP 401/403) |
-| 5 | Nansen MCP server unreachable (with `--address`, the tool shows a crowd-only verdict and exits 0) |
+| 5 | Nansen MCP server unreachable, or the token search call itself failed (with `--address`, an unreachable server gives a crowd-only verdict and exit 0) |
 
 ---
 
@@ -174,6 +174,7 @@ Other options: `--timeout 60` (network timeout in seconds), `-v` (debug log, key
 
 ```text
 Zalat Smart Money Verdict
+>>> DISAGREEMENT: SMART MONEY vs CROWD <<<
 Token: PEPE (Pepe) on ethereum, lookback 1d
 Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933
 ------------------------------------------------------------
@@ -181,11 +182,11 @@ VERDICT: Smart money is buying into fear  [Contrarian Bullish]
 The crowd is fearful while smart-money wallets accumulate. This is the kind of disagreement worth a closer look.
 Disagreement: YES - smart money and the crowd point in opposite directions.
 
-Smart money: Accumulating (moderate), score +0.59
+Smart money: Accumulating (strong), score +0.64
   - Net flow: +$1.2M (in $1.5M / out $300.0k, 12 wallets)
   - Smart buyers vs sellers: $800.0k bought / $200.0k sold (score +0.60)
 Crowd mood: Extreme Fear (22/100) - market-wide Fear & Greed Index (BTC-centric), not token-specific
-Divergence score: +0.33 (positive = smart money leans against the crowd)
+Divergence score: +0.36 (positive = smart money leans against the crowd)
 
 Confidence: High
 
@@ -194,6 +195,7 @@ Not financial advice. For research and education only.
 ============================================================
 
 حكم زلط للأموال الذكية
+>>> تباين: الأموال الذكية عكس الجمهور <<<
 العملة: PEPE (Pepe) على شبكة ethereum، الفترة 1d
 العنوان: 0x6982508145454ce325ddbe47a25d4ec3d2311933
 ------------------------------------------------------------
@@ -201,11 +203,11 @@ Not financial advice. For research and education only.
 الجمهور خائف بينما محافظ الأموال الذكية تُجمِّع. هذا النوع من التباين يستحق نظرة أعمق.
 تباين: نعم - الأموال الذكية والجمهور في اتجاهين متعاكسين.
 
-الأموال الذكية: تجميع (متوسط)، الدرجة +0.59
-  - صافي التدفق: +$1.2M (داخل $1.5M / خارج $300.0k، 12 محفظة)
+الأموال الذكية: تجميع (قوي)، الدرجة +0.64
+  - صافي التدفق: +$1.2M (وارد $1.5M / صادر $300.0k، 12 محفظة)
   - المشترون مقابل البائعين الأذكياء: شراء $800.0k / بيع $200.0k (الدرجة +0.60)
 مزاج الجمهور: خوف شديد (22/100) - مؤشر الخوف والطمع للسوق كله (يتمحور حول البيتكوين)، وليس خاصاً بهذه العملة
-درجة التباين: +0.33 (موجبة = الأموال الذكية عكس الجمهور)
+درجة التباين: +0.36 (موجبة = الأموال الذكية عكس الجمهور)
 
 الثقة: مرتفعة
 
@@ -229,22 +231,28 @@ The tool makes these calls, all in **one MCP session**:
 
 **Smart-money score** `s` (from -1 to +1):
 
-- `flow_score = tanh(net_flow / (inflow + outflow))`. When inflow and outflow are unknown, the tool divides by a fixed
-  $100k instead.
-- `buy_sell_score = (bought - sold) / (bought + sold)`
+- `flow_score = net_flow / (inflow + outflow)`, which is the share of smart-money volume that was net buying. It uses
+  the same -1 to +1 scale as the buy/sell part. If Nansen only reports the net figure, the tool uses
+  `tanh(net_flow / $100k)` instead.
+- `buy_sell_score = (bought - sold) / (bought + sold)`, using **USD** volume only. Columns in native token units are
+  never added up as dollars. If there is no USD column, this part is marked unavailable.
 - `s = 0.6 × flow_score + 0.4 × buy_sell_score`. If only one part is available, `s` is that part alone.
 - `s ≥ +0.2` means **Accumulating** and `s ≤ -0.2` means **Distributing**. Anything in between is **Neutral**.
   Strength is *strong* when `|s| ≥ 0.6`, *moderate* when `|s| ≥ 0.2`, and *weak* below that.
 
 **Crowd mood** comes from the Fear & Greed value `v` (0 to 100): 0–24 Extreme Fear, 25–44 Fear, 45–55 Neutral,
-56–75 Greed, 76–100 Extreme Greed. The crowd score is `c = (v - 50) / 50`.
+56–75 Greed, 76–100 Extreme Greed. The crowd score is `c = (v - 50) / 50`. These buckets are this tool's own, so the
+label shown can differ slightly from the `value_classification` text on alternative.me's site. The JSON output
+includes both.
 
 **Divergence** `= s × (−c)`. A positive value means smart money is leaning against the crowd. The tool flags a
 **disagreement** when `|s| ≥ 0.2`, the crowd is outside Neutral, and the two have opposite signs.
 
 **Confidence** starts at High when both smart-money signals are available and at Medium when only one is. It drops one
 level for each of these: a weak signal (`|s| < 0.4`), net flow and buy/sell pointing in different directions, fewer
-than 3 smart wallets, or a crowd value between 45 and 55. It is Low whenever Nansen data or the Fear & Greed Index is
+than 3 smart wallets, or a crowd value between 45 and 55. The wallet count comes from the flows summary. If that is
+missing, the tool uses the larger of the buyer and seller counts, which is a lower bound: a wallet can appear on both
+sides, so adding the two would double-count. It is Low whenever Nansen data or the Fear & Greed Index is
 unavailable. The reasons are printed under **Why:**.
 
 If one Nansen call fails or returns something the tool cannot read, you still get a verdict. That signal is marked
@@ -273,6 +281,22 @@ python scripts/stress_test.py
 # or customise:
 python scripts/stress_test.py --tokens PEPE,UNI,LINK,AAVE --chain ethereum --min-calls 100 --delay 0.5
 ```
+
+Options:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--tokens` | `PEPE,UNI,LINK,AAVE,SHIB,LDO,MKR,ARB,ONDO,ENA` | Comma-separated symbols (at least one) |
+| `--chain` | `ethereum` | Chain to search on |
+| `--periods` | `1h,1d,7d` | Flow lookback periods to cycle through (each must be one of `5m,1h,6h,12h,1d,7d`) |
+| `--min-calls` | `100` | Stop once this many calls were made |
+| `--max-calls` | min-calls + 20 | Hard cap on calls, including retries |
+| `--delay` | `0.3` | Seconds between calls |
+| `--timeout` | 30 or `ZALAT_TIMEOUT` | Network timeout in seconds |
+| `--out` | `reports` | Output folder |
+
+The script exits with 0 when the target is reached, 1 when it is not, 2 for bad options or a missing key, 4 when the
+key is rejected and 5 when Nansen is unreachable.
 
 For each token, in rounds, it runs `general_search`, then `token_recent_flows_summary` for the `1h`, `1d` and `7d`
 periods, then `token_who_bought_sold` for BUY and SELL. It stops once it reaches `--min-calls`. Network errors are
@@ -305,6 +329,7 @@ Nansen MCP stress test - completed
 | `NANSEN_API_KEY is not set` (exit 2) | Create `.env` from `.env.example` and paste your key, or export `NANSEN_API_KEY`. |
 | `Nansen rejected the API key (HTTP 401/403)` (exit 4) | Check the key for typos and extra spaces, and confirm it is active and has API/MCP access in your Nansen account. If Nansen changed the header name, set `NANSEN_API_KEY_HEADER` in `.env`. |
 | `Nansen MCP unreachable` (exit 5) | Check your internet connection, VPN, proxy or firewall. If Nansen moved the endpoint, set `NANSEN_MCP_URL` in `.env`. Try `--timeout 60`. |
+| `Token search failed (tool_error: ...)` (exit 5) | The `general_search` call failed on Nansen's side. Try again later, pass `--address <contract>`, or send the `--raw` output. |
 | `Could not find token` (exit 3) | Check the symbol and `--chain`, or pass `--address <contract>`. |
 | Verdict says `INSUFFICIENT_DATA`, or a signal is "unavailable" | A Nansen tool returned an error (e.g. `NANSEN_TOOL_ERROR ... unclassified_failure`) or an unexpected format. Run with `--raw` and **send the `--raw` output** (e.g. `python -m zalat PEPE --raw 2> raw_output.txt`) so the parsers can be tuned. The key is never included. |
 | Arabic looks broken | Use Windows Terminal (not the old console window), or a UTF-8 terminal on macOS/Linux. |
@@ -316,6 +341,7 @@ NANSEN_API_KEY=...                              # required
 NANSEN_MCP_URL=https://mcp.nansen.ai/ra/mcp/    # MCP endpoint (default shown)
 NANSEN_API_KEY_HEADER=NANSEN-API-KEY            # header that carries the key (default shown)
 ZALAT_TIMEOUT=30                                # seconds
+ZALAT_FNG_URL=https://api.alternative.me/fng/?limit=2   # Fear & Greed endpoint (default shown)
 ```
 
 ---

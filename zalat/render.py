@@ -7,20 +7,30 @@ import json
 from typing import Literal
 
 from zalat import __version__
-from zalat.i18n import DISCLAIMER, Lang, fmt_score, fmt_usd, kind_text, label, t
-from zalat.verdict import Verdict
+from zalat.i18n import DISCLAIMER, Lang, fmt_score, fmt_usd, fmt_wallets, kind_text, label, t
+from zalat.nansen_mcp import TokenRef
+from zalat.verdict import DISAGREEMENT_KINDS, Verdict
 
 DIVIDER = "=" * 60
+
+
+def token_label(tok: TokenRef) -> str:
+    """"PEPE (Pepe)", or just "PEPE" when there is no distinct name."""
+    if tok.name and tok.name != tok.symbol:
+        return f"{tok.symbol} ({tok.name})"
+    return tok.symbol
 
 
 def _block(v: Verdict, lang: Lang) -> str:
     """Render the verdict in one language."""
     tok, sm, crowd = v.token, v.sm, v.crowd
     short, headline, explanation = kind_text(v.kind, lang)
-    lines = [
-        t("title", lang),
-        t("token_line", lang, symbol=tok.symbol, name=tok.name or tok.symbol,
-          chain=tok.chain, period=v.period),
+    lines = [t("title", lang)]
+    if v.kind in DISAGREEMENT_KINDS:
+        # The headline case: make it impossible to miss.
+        lines.append(t("banner", lang))
+    lines += [
+        t("token_line", lang, token=token_label(tok), chain=tok.chain, period=v.period),
         t("address", lang, address=tok.address),
         "-" * 60,
         t("verdict", lang, headline=headline, kind=short),
@@ -37,7 +47,8 @@ def _block(v: Verdict, lang: Lang) -> str:
                        score=fmt_score(sm.score)))
     f = sm.flow
     if f is not None and f.net_usd is not None:
-        wallets = t("wallets_part", lang, n=f.wallets) if f.wallets is not None else ""
+        wallets = (t("wallets_part", lang, wallets=fmt_wallets(f.wallets, lang))
+                   if f.wallets is not None else "")
         lines.append(t("flow_line", lang, net=("+" if f.net_usd > 0 else "") + fmt_usd(f.net_usd),
                        inflow=fmt_usd(f.inflow_usd), outflow=fmt_usd(f.outflow_usd),
                        wallets=wallets))

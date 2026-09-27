@@ -323,11 +323,50 @@ class BuySellSide:
 _NO_RESULTS = re.compile(r"\bno (results|data|trades|transactions)\b|\b0 results\b|total results\**:?\**\s*0\b", re.I)
 
 
-def extract_side_volume(text: str) -> BuySellSide | None:
-    """Sum the USD volume of all labelled wallets on one side.
+_SIDE_WORDS = {"BUY": ("buy", "bought"), "SELL": ("sell", "sold")}
+_VOL_EXCLUDE = ("price", "count", "pct", "percent", "balance", "pnl", "holding")
+
+
+def _is_usd_col(n: str) -> bool:
+    """True if a normalised column name is explicitly denominated in USD.
+
+    Only ``usd`` or ``value`` count as a USD marker. Plain "volume" /
+    "amount" columns are often in native token units (Nansen may disable
+    USD fields), and adding those up as dollars would be badly wrong.
+    """
+    words = n.split()
+    return "usd" in n or "value" in words
+
+
+def pick_side_volume_col(cols: Iterable[str], side: str | None = None) -> str | None:
+    """Choose the USD volume column for ``side`` ("BUY"/"SELL"/None).
+
+    Columns naming the opposite side (e.g. ``sold_volume_usd`` when asking
+    for BUY) are excluded. Among the rest, prefer ones naming this side,
+    then ones mentioning volume/trade, then any other USD column.
+    """
+    side = side.upper() if side else None
+    mine = _SIDE_WORDS.get(side, ()) if side else ()
+    other = _SIDE_WORDS["SELL" if side == "BUY" else "BUY"] if side in _SIDE_WORDS else ()
+    best: tuple[int, int, str] | None = None
+    for i, col in enumerate(cols):
+        n = norm(col)
+        if not _is_usd_col(n) or any(x in n for x in _VOL_EXCLUDE):
+            continue
+        if any(w in n for w in other):
+            continue
+        rank = 0 if any(w in n for w in mine) else 1 if ("volume" in n or "trade" in n) else 2
+        if best is None or (rank, i) < best[:2]:
+            best = (rank, i, col)
+    return best[2] if best else None
+
+
+def extract_side_volume(text: str, side: str | None = None) -> BuySellSide | None:
+    """Sum the USD volume of all labelled wallets on one side ("BUY"/"SELL").
 
     Returns ``BuySellSide(0, 0)`` when the tool clearly says there were no
-    results, and ``None`` when the payload cannot be understood.
+    results, and ``None`` when the payload cannot be understood or has no
+    USD-denominated volume column (the signal is then "unavailable").
     """
     payload = unwrap_payload(text)
     rows = records_from(payload)
@@ -344,13 +383,7 @@ def extract_side_volume(text: str) -> BuySellSide | None:
     cols: list[str] = []
     for r in rows:  # union of keys, preserving order
         cols.extend(k for k in r.keys() if k not in cols)
-    # Prefer explicit USD columns over token-amount columns.
-    vol_c = find_col(
-        cols,
-        [["volume", "usd"], ["bought", "usd"], ["sold", "usd"], ["value", "usd"],
-         ["trade", "usd"], ["usd"], ["volume"], ["amount"]],
-        exclude=["price", "count", "pct", "percent", "balance", "pnl"],
-    )
+    vol_c = pick_side_volume_col(cols, side)
     if vol_c is None:
         return None
     total, wallets = 0.0, 0

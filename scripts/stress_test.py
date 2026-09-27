@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from zalat.config import Settings, load_settings, redact  # noqa: E402
 from zalat.errors import ConfigError, NansenAuthError, NansenNetworkError  # noqa: E402
 from zalat.nansen_mcp import (  # noqa: E402
+    LOOKBACK,
     NansenMCPClient,
     ToolResult,
     TokenRef,
@@ -129,6 +130,7 @@ class StressRun:
         rnd = 0
         while self.total < min_calls and self.total < self.max_calls:
             rnd += 1
+            before = self.total
             for sym in tokens:
                 if self.total >= min_calls:
                     return
@@ -161,8 +163,10 @@ class StressRun:
                     r = await self.call("token_who_bought_sold",
                                         who_bought_sold_args(token, side, period), sym, side)
                     if r.ok:
-                        key = "wbs_parsed" if extract_side_volume(r.text) else "wbs_unparsed"
+                        key = "wbs_parsed" if extract_side_volume(r.text, side) else "wbs_unparsed"
                         self.parse_stats[key] += 1
+            if self.total == before:
+                break  # a full round made no calls (e.g. empty token list): don't spin forever
 
     def report(self, meta: dict[str, Any]) -> dict[str, Any]:
         per_tool: dict[str, dict[str, Any]] = {}
@@ -195,7 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Make >= N Nansen MCP calls and write a report.")
     p.add_argument("--tokens", default=DEFAULT_TOKENS, help="comma-separated symbols")
     p.add_argument("--chain", default="ethereum")
-    p.add_argument("--periods", default="1h,1d,7d", help="flow lookback periods to cycle")
+    p.add_argument("--periods", default="1h,1d,7d",
+                   help=f"comma-separated flow lookback periods ({', '.join(LOOKBACK)})")
     p.add_argument("--min-calls", type=int, default=100)
     p.add_argument("--max-calls", type=int, default=None,
                    help="hard cap on calls incl. retries (default: min-calls + 20)")
@@ -235,14 +240,24 @@ async def main(
     4 auth rejected, 5 MCP unreachable.
     """
     args = build_parser().parse_args(argv)
+    tokens = [t.strip() for t in args.tokens.split(",") if t.strip()]
+    if not tokens:
+        print("Error: --tokens must list at least one symbol, e.g. PEPE,UNI", file=sys.stderr)
+        return 2
+    periods = [p.strip() for p in args.periods.split(",") if p.strip()] or ["1d"]
+    bad = [p for p in periods if p not in LOOKBACK]
+    if bad:
+        print(f"Error: invalid --periods {bad}; allowed: {', '.join(LOOKBACK)}", file=sys.stderr)
+        return 2
+    if args.min_calls < 1:
+        print("Error: --min-calls must be at least 1", file=sys.stderr)
+        return 2
     if settings is None:
         try:
             settings = load_settings(env_file, timeout=args.timeout)
         except ConfigError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
-    tokens = [t.strip() for t in args.tokens.split(",") if t.strip()]
-    periods = [p.strip() for p in args.periods.split(",") if p.strip()] or ["1d"]
     max_calls = args.max_calls or args.min_calls + 20
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

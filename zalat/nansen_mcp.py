@@ -23,6 +23,8 @@ from datetime import timedelta
 from typing import Any, Literal, Protocol
 
 import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 from zalat.config import Settings, redact
 from zalat.errors import (
@@ -31,7 +33,7 @@ from zalat.errors import (
     NansenNetworkError,
     classify_exception,
 )
-from zalat.parsing import parse_markdown_tables, parse_number, records_from, find_col, unwrap_payload
+from zalat.parsing import find_col, parse_number, records_from, unwrap_payload
 
 LOOKBACK = ("5m", "1h", "6h", "12h", "1d", "7d")
 SMART_LABELS = [
@@ -107,10 +109,6 @@ class NansenMCPClient:
         self._session: Any = None
 
     async def __aenter__(self) -> "NansenMCPClient":
-        # Imported lazily so that --help and tests don't pay the import cost.
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
-
         s = self.settings
         stack = AsyncExitStack()
         try:
@@ -244,9 +242,8 @@ def who_bought_sold_args(token: TokenRef, side: str, period: str) -> dict:
 
 def parse_search_candidates(text: str, default_chain: str | None = None) -> list[TokenRef]:
     """Parse every token row from a ``general_search`` response."""
+    # records_from() already flattens every markdown table in the text.
     rows = records_from(unwrap_payload(text))
-    if not rows:  # maybe several tables; records_from already flattens them
-        rows = [r for t in parse_markdown_tables(text) for r in t]
     out: list[TokenRef] = []
     for r in rows:
         cols = list(r.keys())

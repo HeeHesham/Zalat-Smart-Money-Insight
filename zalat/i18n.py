@@ -40,14 +40,14 @@ KIND_TEXT: dict[str, dict[str, tuple[str, str, str]]] = {
                                "الجمهور خائف بينما محافظ الأموال الذكية تُجمِّع. "
                                "هذا النوع من التباين يستحق نظرة أعمق."),
         "WARNING_BEARISH": ("تحذير (هبوطي)", "الأموال الذكية تبيع وسط الطمع",
-                            "الجمهور طمّاع بينما محافظ الأموال الذكية تُصرِّف. "
+                            "يسيطر الطمع على الجمهور بينما محافظ الأموال الذكية تُصرِّف. "
                             "قد تكون الأموال الذكية تجني الأرباح من المشترين المتأخرين."),
         "CONFIRMED_BULLISH": ("صعود مؤكَّد", "الأموال الذكية والجمهور متفائلون معاً",
                               "الطرفان متفقان. الاتفاق أقل دلالة من الاختلاف."),
         "CONFIRMED_BEARISH": ("هبوط مؤكَّد", "الأموال الذكية والجمهور متشائمون معاً",
                               "الطرفان متفقان على الهبوط."),
         "NEUTRAL": ("محايد", "لا يوجد تباين واضح",
-                    "إما الأموال الذكية أو الجمهور بلا اتجاه قوي."),
+                    "لا يوجد اتجاه قوي لدى الأموال الذكية أو لدى الجمهور."),
         "INSUFFICIENT_DATA": ("بيانات غير كافية", "لا توجد بيانات كافية عن الأموال الذكية لإصدار حكم",
                               "بيانات Nansen غير متاحة أو تعذّرت قراءتها. "
                               "مزاج الجمهور معروض أدناه."),
@@ -76,7 +76,8 @@ LABELS: dict[str, dict[str, str]] = {
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "title": "Zalat Smart Money Verdict",
-        "token_line": "Token: {symbol} ({name}) on {chain}, lookback {period}",
+        "token_line": "Token: {token} on {chain}, lookback {period}",
+        "banner": ">>> DISAGREEMENT: SMART MONEY vs CROWD <<<",
         "address": "Address: {address}",
         "verdict": "VERDICT: {headline}  [{kind}]",
         "disagree_yes": "Disagreement: YES - smart money and the crowd point in opposite directions.",
@@ -85,7 +86,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "sm_unavailable": "Smart money: Unavailable",
         "flow_line": "  - Net flow: {net} (in {inflow} / out {outflow}{wallets})",
         "flow_na": "  - Net flow: unavailable",
-        "wallets_part": ", {n} wallets",
+        "wallets_part": ", {wallets}",
         "bs_line": "  - Smart buyers vs sellers: {buy} bought / {sell} sold (score {score})",
         "bs_na": "  - Smart buyers vs sellers: unavailable",
         "crowd_line": "Crowd mood: {label} ({value}/100) - market-wide Fear & Greed Index (BTC-centric), not token-specific",
@@ -99,7 +100,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "no_sm_trades": "no smart-money buys or sells in this period",
         "crowd_unavailable": "crowd mood (Fear & Greed) unavailable",
         "one_sm_part": "only one of the two smart-money signals was available",
-        "weak_signal": "smart-money signal is weak (|score| {s} < 0.40)",
+        "weak_signal": "smart-money signal is weak (strength {s}, below 0.40)",
         "parts_disagree": "net flow and buyer/seller balance point in different directions",
         "low_wallets": "only {n} smart wallets involved",
         "crowd_neutral": "crowd mood is close to neutral (45-55)",
@@ -109,20 +110,20 @@ STRINGS: dict[str, dict[str, str]] = {
         "lean_positive": "Mild lean: smart money slightly positive.",
         "lean_negative": "Mild lean: smart money slightly negative.",
         "sm_only": "Note: verdict is based on smart money alone.",
-        "market_wide": "Note: Fear & Greed is a market-wide index, not specific to this token.",
     },
     "ar": {
         "title": "حكم زلط للأموال الذكية",
-        "token_line": "العملة: {symbol} ({name}) على شبكة {chain}، الفترة {period}",
+        "token_line": "العملة: {token} على شبكة {chain}، الفترة {period}",
+        "banner": ">>> تباين: الأموال الذكية عكس الجمهور <<<",
         "address": "العنوان: {address}",
         "verdict": "الحكم: {headline}  [{kind}]",
         "disagree_yes": "تباين: نعم - الأموال الذكية والجمهور في اتجاهين متعاكسين.",
         "disagree_no": "تباين: لا",
         "sm_line": "الأموال الذكية: {label}{strength}، الدرجة {score}",
         "sm_unavailable": "الأموال الذكية: غير متاح",
-        "flow_line": "  - صافي التدفق: {net} (داخل {inflow} / خارج {outflow}{wallets})",
+        "flow_line": "  - صافي التدفق: {net} (وارد {inflow} / صادر {outflow}{wallets})",
         "flow_na": "  - صافي التدفق: غير متاح",
-        "wallets_part": "، {n} محفظة",
+        "wallets_part": "، {wallets}",
         "bs_line": "  - المشترون مقابل البائعين الأذكياء: شراء {buy} / بيع {sell} (الدرجة {score})",
         "bs_na": "  - المشترون مقابل البائعين الأذكياء: غير متاح",
         "crowd_line": "مزاج الجمهور: {label} ({value}/100) - مؤشر الخوف والطمع للسوق كله (يتمحور حول البيتكوين)، وليس خاصاً بهذه العملة",
@@ -135,7 +136,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "no_sm_trades": "لا توجد عمليات شراء أو بيع من الأموال الذكية في هذه الفترة",
         "crowd_unavailable": "مزاج الجمهور (الخوف والطمع) غير متاح",
         "one_sm_part": "توفرت إشارة واحدة فقط من إشارتي الأموال الذكية",
-        "weak_signal": "إشارة الأموال الذكية ضعيفة (|الدرجة| {s} < 0.40)",
+        "weak_signal": "إشارة الأموال الذكية ضعيفة (قوتها {s}، أقل من 0.40)",
         "parts_disagree": "صافي التدفق وتوازن الشراء/البيع في اتجاهين مختلفين",
         "low_wallets": "عدد المحافظ الذكية المشاركة {n} فقط",
         "crowd_neutral": "مزاج الجمهور قريب من المحايد (45-55)",
@@ -144,7 +145,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "lean_positive": "ميل طفيف: الأموال الذكية إيجابية قليلاً.",
         "lean_negative": "ميل طفيف: الأموال الذكية سلبية قليلاً.",
         "sm_only": "ملاحظة: الحكم مبني على الأموال الذكية وحدها.",
-        "market_wide": "ملاحظة: مؤشر الخوف والطمع يقيس السوق كله، وليس هذه العملة تحديداً.",
     },
 }
 
@@ -161,6 +161,21 @@ def fmt_usd(x: float | None) -> str:
         if a >= div:
             return f"{sign}${a / div:.1f}{suf}"
     return f"{sign}${a:,.0f}" if a >= 1 else f"{sign}${a:.2f}"
+
+
+def fmt_wallets(n: int, lang: Lang) -> str:
+    """Wallet count with the right plural form.
+
+    English: "1 wallet" / "5 wallets". Arabic follows the number rules:
+    1 محفظة, 2 محفظتان, 3-10 محافظ (plural), 11+ محفظة (singular again).
+    """
+    if lang == "en":
+        return f"{n} wallet" if n == 1 else f"{n} wallets"
+    if n == 2:
+        return "2 محفظتان"
+    if 3 <= n <= 10:
+        return f"{n} محافظ"
+    return f"{n} محفظة"
 
 
 def fmt_score(x: float | None) -> str:

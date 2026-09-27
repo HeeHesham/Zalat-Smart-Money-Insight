@@ -14,10 +14,7 @@ from typing import Iterable
 
 import httpx
 
-try:  # pragma: no cover - import guard only
-    from mcp.shared.exceptions import McpError
-except Exception:  # pragma: no cover
-    McpError = None  # type: ignore[assignment]
+from mcp.shared.exceptions import McpError
 
 #: Messages that indicate a rejected / missing API key.
 AUTH_RE = re.compile(r"unauthori[sz]ed|invalid api key|forbidden|\b401\b|\b403\b", re.I)
@@ -29,10 +26,6 @@ class ZalatError(Exception):
 
 class ConfigError(ZalatError):
     """Configuration problem (e.g. the API key is missing)."""
-
-
-class TokenNotFound(ZalatError):
-    """The symbol could not be resolved to a token address on the chain."""
 
 
 class NansenAuthError(ZalatError):
@@ -57,19 +50,16 @@ def _flatten(exc: BaseException) -> list[BaseException]:
     return [exc]
 
 
-def _redact(text: str, secrets: Iterable[str]) -> str:
-    for s in secrets:
-        if s:
-            text = text.replace(s, "***")
-    return text
-
-
 def classify_exception(exc: BaseException, secrets: Iterable[str] = ()) -> ZalatError:
     """Map any exception (or exception group) onto a ``ZalatError`` subclass.
 
     Leaves are checked in order; the first one we recognise wins. Unknown
     exceptions become ``NansenProtocolError``. Messages are redacted.
     """
+    # Imported here: config imports this module (ConfigError), so a top-level
+    # import would be circular.
+    from zalat.config import redact as _redact
+
     secrets = [s for s in secrets if s]
     if isinstance(exc, ZalatError):
         return type(exc)(_redact(str(exc), secrets))
@@ -92,7 +82,7 @@ def classify_exception(exc: BaseException, secrets: Iterable[str] = ()) -> Zalat
             return NansenNetworkError(
                 _redact(f"cannot reach Nansen MCP: {type(leaf).__name__}: {leaf}", secrets)
             )
-        if McpError is not None and isinstance(leaf, McpError):
+        if isinstance(leaf, McpError):
             msg = _redact(str(leaf), secrets)
             if AUTH_RE.search(msg):
                 return NansenAuthError(f"Nansen rejected the request: {msg}")

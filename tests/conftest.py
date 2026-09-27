@@ -48,6 +48,20 @@ def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _restore_logging():
+    """``-v`` reconfigures the root logger; undo that after each test."""
+    import logging
+
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    asyncio_level = logging.getLogger("asyncio").level
+    yield
+    root.handlers[:] = handlers
+    root.setLevel(level)
+    logging.getLogger("asyncio").setLevel(asyncio_level)
+
+
+@pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests never see the developer's real key or overrides."""
     for var in ("NANSEN_API_KEY", "NANSEN_MCP_URL", "NANSEN_API_KEY_HEADER",

@@ -16,6 +16,7 @@ from tests.conftest import (
 from zalat import DISCLAIMER_AR, DISCLAIMER_EN
 from zalat.cli import main
 from zalat.errors import NansenAuthError, NansenNetworkError
+from zalat.nansen_mcp import ToolResult
 
 
 @pytest.fixture
@@ -128,9 +129,65 @@ def test_token_not_found_exit_3(key, capsys):
     assert len(fake.calls) == 1
 
 
-def test_search_tool_error_exit_3(key, capsys):
+def test_search_tool_error_exit_5(key, capsys):
     code, _ = cli(["PEPE"], FakeNansenClient({"general_search": tool_error("general_search")}))
-    assert code == 3 and "--address" in capsys.readouterr().err
+    assert code == 5 and "Token search failed" in capsys.readouterr().err
+
+
+def test_search_auth_tool_error_exit_4(key, capsys):
+    res = ToolResult("general_search", False, "NANSEN_TOOL_ERROR: Unauthorized", True, "auth",
+                     reason="auth")
+    code, _ = cli(["PEPE"], FakeNansenClient({"general_search": res}))
+    assert code == 4
+
+
+def test_address_without_symbol_uses_short_address(key, capsys):
+    addr = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+    code, _ = cli(["--address", addr, "--lang", "en"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Token: 0x6982…1933 on ethereum" in out
+    assert "0X69825081" not in out
+    assert f"Address: {addr}" in out
+
+
+def test_address_with_symbol_no_duplicate_name(key, capsys):
+    cli(["PEPE", "--address", "0xabc", "--lang", "en"])
+    out = capsys.readouterr().out
+    assert "Token: PEPE on ethereum" in out and "PEPE (PEPE)" not in out
+
+
+def test_resolved_token_shows_name(key, capsys):
+    cli(["PEPE", "--lang", "en"])
+    assert "Token: PEPE (Pepe) on ethereum" in capsys.readouterr().out
+
+
+def test_disagreement_banner(key, capsys):
+    cli(["PEPE"], fng=20)
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines[1] == ">>> DISAGREEMENT: SMART MONEY vs CROWD <<<"
+    assert ">>> تباين: الأموال الذكية عكس الجمهور <<<" in out
+    cli(["PEPE"], fng=80)  # confirmed bullish -> no banner
+    assert ">>>" not in capsys.readouterr().out
+
+
+def test_side_aware_volume_through_cli(key, capsys):
+    both_cols = ok("token_who_bought_sold", json.dumps(
+        {"data": [{"address": "0x1", "bought_volume_usd": 20000, "sold_volume_usd": 4000}]}))
+    responses = happy_responses()
+    responses["token_who_bought_sold"] = both_cols
+    cli(["PEPE", "--json"], FakeNansenClient(responses))
+    data = json.loads(capsys.readouterr().out)
+    assert data["sm"]["buy"]["volume_usd"] == 20000
+    assert data["sm"]["sell"]["volume_usd"] == 4000
+
+
+def test_verbose_sets_asyncio_logger_info(key, capsys):
+    import logging
+
+    cli(["PEPE", "-v"])
+    assert logging.getLogger("asyncio").level == logging.INFO
 
 
 def test_auth_error_exit_4(key, capsys):

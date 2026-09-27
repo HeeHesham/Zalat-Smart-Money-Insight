@@ -6,7 +6,7 @@ import pytest
 
 from zalat import DISCLAIMER_AR, DISCLAIMER_EN
 from zalat.fng import CrowdSignal, signal_from_value
-from zalat.i18n import KIND_TEXT, LABELS, STRINGS, fmt_score, fmt_usd, t
+from zalat.i18n import KIND_TEXT, LABELS, STRINGS, fmt_score, fmt_usd, fmt_wallets, t
 from zalat.nansen_mcp import TokenRef
 from zalat.parsing import BuySellSide, SmFlow
 from zalat.render import render_json, render_text
@@ -99,3 +99,46 @@ def test_json_with_unavailable_parts():
     data = json.loads(render_json(v))
     assert data["kind"] == "INSUFFICIENT_DATA"
     assert {"key": "crowd_unavailable", "params": {}} in data["reasons"]
+
+
+@pytest.mark.parametrize("n, en, ar", [(1, "1 wallet", "1 محفظة"), (2, "2 wallets", "2 محفظتان"),
+                                       (3, "3 wallets", "3 محافظ"), (10, "10 wallets", "10 محافظ"),
+                                       (11, "11 wallets", "11 محفظة"), (150, "150 wallets", "150 محفظة")])
+def test_wallet_plurals(n, en, ar):
+    assert fmt_wallets(n, "en") == en
+    assert fmt_wallets(n, "ar") == ar
+
+
+def test_arabic_wording():
+    out = render_text(_verdict(), "ar")
+    assert "وارد $1.5M / صادر $300.0k" in out
+    assert "12 محفظة" in out
+    assert "داخل" not in out and "خارج" not in out
+    assert KIND_TEXT["ar"]["NEUTRAL"][2] == "لا يوجد اتجاه قوي لدى الأموال الذكية أو لدى الجمهور."
+    assert "يسيطر الطمع على الجمهور" in KIND_TEXT["ar"]["WARNING_BEARISH"][2]
+    weak = t("weak_signal", "ar", s=0.12)
+    assert "|" not in weak and "<" not in weak and "0.12" in weak
+
+
+def test_banner_only_for_disagreement():
+    assert render_text(_verdict(fng=20), "en").splitlines()[1].startswith(">>> DISAGREEMENT")
+    assert ">>>" not in render_text(_verdict(fng=80), "both")
+    assert ">>>" not in render_text(_verdict(fng=None), "both")
+
+
+def test_no_dead_i18n_keys():
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "zalat"
+    code = "".join(p.read_text(encoding="utf-8") for p in root.glob("*.py") if p.name != "i18n.py")
+    for key in STRINGS["en"]:
+        assert re.search(rf'["\']{key}["\']', code), f"unused i18n key: {key}"
+
+
+def test_token_label():
+    from zalat.render import token_label
+
+    assert token_label(TokenRef("PEPE", "PEPE", "0x1", "ethereum")) == "PEPE"
+    assert token_label(TokenRef("PEPE", "", "0x1", "ethereum")) == "PEPE"
+    assert token_label(TokenRef("PEPE", "Pepe", "0x1", "ethereum")) == "PEPE (Pepe)"

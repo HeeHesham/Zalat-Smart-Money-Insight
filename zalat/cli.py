@@ -6,7 +6,7 @@ Exit codes:
     2  bad arguments or configuration (e.g. missing API key)
     3  token could not be resolved from its symbol
     4  Nansen rejected the API key (HTTP 401/403)
-    5  Nansen MCP unreachable (and no --address given)
+    5  Nansen MCP unreachable, or the token search itself failed (no --address)
 """
 
 from __future__ import annotations
@@ -54,6 +54,11 @@ class _RedactFilter(logging.Filter):
         record.msg = redact(record.getMessage(), self.secrets)
         record.args = ()
         return True
+
+
+def short_address(addr: str) -> str:
+    """``0x6982508145454ce325ddbe47a25d4ec3d2311933`` -> ``0x6982…1933``."""
+    return addr if len(addr) <= 12 else f"{addr[:6]}…{addr[-4:]}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,8 +120,10 @@ async def run(
     chain = args.chain.strip().lower()
     token: TokenRef | None = None
     if args.address:
-        sym = (args.symbol or args.address[:10]).upper()
-        token = TokenRef(symbol=sym, name=args.symbol or "", address=args.address.strip(), chain=chain)
+        addr = args.address.strip()
+        # Without a symbol, show a shortened address rather than inventing a ticker.
+        sym = args.symbol.upper() if args.symbol else short_address(addr)
+        token = TokenRef(symbol=sym, name="", address=addr, chain=chain)
 
     flow = buy = sell = None
     try:
@@ -128,8 +135,11 @@ async def run(
                 if token is None:
                     crowd_task.cancel()
                     if not res.ok:
+                        # The search itself failed (tool error, timeout...): that is
+                        # a Nansen-side problem, not "token does not exist".
                         _err(f"Token search failed ({res.error_kind}: {res.reason}). "
                              "Try again, or pass --address <contract>.", settings)
+                        return (EXIT_AUTH if res.error_kind == "auth" else EXIT_UNREACHABLE), ""
                     else:
                         _err(f"Could not find token '{args.symbol}' on chain '{chain}'. "
                              "Check the symbol/chain or pass --address <contract>.", settings)
@@ -146,8 +156,8 @@ async def run(
                     log.debug("%s failed: %s %s", r.tool, r.error_kind, r.reason)
             # Each part independently: a failed or unparseable tool -> None.
             flow = extract_sm_flow(fres.text) if fres.ok else None
-            buy = extract_side_volume(bres.text) if bres.ok else None
-            sell = extract_side_volume(sres.text) if sres.ok else None
+            buy = extract_side_volume(bres.text, "BUY") if bres.ok else None
+            sell = extract_side_volume(sres.text, "SELL") if sres.ok else None
     except NansenAuthError as exc:
         crowd_task.cancel()
         _err(f"Error: {exc}", settings)
@@ -200,6 +210,7 @@ def main(
         handler = logging.StreamHandler(sys.stderr)
         handler.addFilter(_RedactFilter([settings.api_key]))
         logging.basicConfig(level=logging.DEBUG, handlers=[handler], force=True)
+        logging.getLogger("asyncio").setLevel(logging.INFO)
     # Never let HTTP libraries log request headers.
     for name in ("httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)

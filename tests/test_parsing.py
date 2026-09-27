@@ -142,8 +142,8 @@ def test_extract_sm_flow_missing_returns_none(text):
 
 
 def test_extract_side_volume():
-    buy = extract_side_volume(fixture_text("wbs_buy_md.txt"))
-    sell = extract_side_volume(fixture_text("wbs_sell_md.txt"))
+    buy = extract_side_volume(fixture_text("wbs_buy_md.txt"), "BUY")
+    sell = extract_side_volume(fixture_text("wbs_sell_md.txt"), "SELL")
     assert buy is not None and buy.volume_usd == pytest.approx(800_000) and buy.wallets == 3
     assert sell is not None and sell.volume_usd == pytest.approx(200_000) and sell.wallets == 2
 
@@ -157,3 +157,33 @@ def test_extract_side_volume_json_and_empty():
     assert extract_side_volume('{"data": []}').wallets == 0
     assert extract_side_volume("garbage") is None
     assert extract_side_volume("| Address | Label |\n|--|--|\n| 0x1 | Fund |") is None
+
+
+def test_side_volume_respects_side_json():
+    js = json.dumps({"data": [{"bought_volume_usd": 20000, "sold_volume_usd": 4000},
+                              {"bought_volume_usd": "1k", "sold_volume_usd": "500"}]})
+    assert extract_side_volume(js, "BUY").volume_usd == pytest.approx(21_000)
+    assert extract_side_volume(js, "SELL").volume_usd == pytest.approx(4_500)
+
+
+def test_side_volume_respects_side_markdown_fixture():
+    md = fixture_text("wbs_both_usd_md.txt")
+    assert extract_side_volume(md, "BUY").volume_usd == pytest.approx(300_000)
+    assert extract_side_volume(md, "SELL").volume_usd == pytest.approx(60_000)
+    assert extract_side_volume(md, "BUY").wallets == 2
+
+
+def test_side_volume_token_units_only_is_unavailable():
+    # Only native token volumes: must NOT be summed as dollars.
+    md = fixture_text("wbs_token_volume_only_md.txt")
+    assert extract_side_volume(md, "BUY") is None
+    assert extract_side_volume(md, "SELL") is None
+    assert extract_side_volume(json.dumps({"data": [{"volume": 5, "amount": 7}]}), "BUY") is None
+
+
+def test_side_volume_prefers_usd_over_token_columns():
+    md = ("| Address | Bought Token Volume | Bought Volume USD |\n|--|--|--|\n"
+          "| 0x1 | 1000000000 | $1.5k |")
+    assert extract_side_volume(md, "BUY").volume_usd == pytest.approx(1500)
+    value_col = json.dumps({"data": [{"tradeValue": 250, "tokenAmount": 9e9}]})
+    assert extract_side_volume(value_col, "SELL").volume_usd == pytest.approx(250)

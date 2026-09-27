@@ -30,9 +30,10 @@ def sm(score, flow_score="same", bs_score="same", wallets=20):
 # ---- scoring -------------------------------------------------------------------
 def test_build_sm_signal_both_parts():
     s = build_sm_signal(SmFlow(1.2e6, 1.5e6, 3e5, 12), BuySellSide(8e5, 3), BuySellSide(2e5, 2))
-    assert s.flow_score == pytest.approx(math.tanh(1.2e6 / 1.8e6))
+    # gross known -> linear ratio net / (in + out), same scale as bs_score
+    assert s.flow_score == pytest.approx(1.2e6 / 1.8e6)
     assert s.bs_score == pytest.approx(0.6)
-    assert s.score == pytest.approx(0.6 * math.tanh(1.2e6 / 1.8e6) + 0.4 * 0.6)
+    assert s.score == pytest.approx(0.6 * (1.2e6 / 1.8e6) + 0.4 * 0.6)
     assert s.label == "Accumulating" and s.wallets == 12 and s.unavailable_reasons == []
 
 
@@ -40,7 +41,7 @@ def test_build_sm_signal_renormalises_single_part():
     only_bs = build_sm_signal(None, BuySellSide(1e5, 2), BuySellSide(3e5, 2))
     assert only_bs.score == pytest.approx(-0.5) and only_bs.flow_score is None
     assert ("flow_unavailable", {}) in only_bs.unavailable_reasons
-    assert only_bs.wallets == 4
+    assert only_bs.wallets == 2  # max(buyers, sellers): no double counting
     only_flow = build_sm_signal(SmFlow(-1e5, None, None, None), None, None)
     assert only_flow.score == pytest.approx(math.tanh(-1.0))  # fixed 1e5 scale
     assert ("bs_unavailable", {}) in only_flow.unavailable_reasons
@@ -146,3 +147,22 @@ def test_notes():
     assert ("capitulation", {}) in decide(TOK, "1d", sm(-0.7), signal_from_value(10)).notes
     assert ("lean_positive", {}) in decide(TOK, "1d", sm(0.1), signal_from_value(20)).notes
     assert ("lean_negative", {}) in decide(TOK, "1d", sm(-0.1), signal_from_value(20)).notes
+
+
+def test_flow_score_linear_when_gross_known_and_clamped():
+    assert build_sm_signal(SmFlow(-250_000, 50_000, 300_000, 7), None, None).flow_score \
+        == pytest.approx(-250_000 / 350_000)
+    # All inflow -> exactly +1 (tanh would cap at 0.76).
+    assert build_sm_signal(SmFlow(1e6, 1e6, 0, 5), None, None).flow_score == pytest.approx(1.0)
+    # Inconsistent net vs in/out is clamped to [-1, 1].
+    assert build_sm_signal(SmFlow(5e6, 1e6, 0, 5), None, None).flow_score == 1.0
+
+
+def test_flow_score_tanh_fallback_when_gross_unknown():
+    s = build_sm_signal(SmFlow(2e5, 1e5, None, None), None, None)
+    assert s.flow_score == pytest.approx(math.tanh(2.0))
+
+
+def test_wallets_not_double_counted():
+    s = build_sm_signal(None, BuySellSide(1e5, 5), BuySellSide(1e5, 3))
+    assert s.wallets == 5

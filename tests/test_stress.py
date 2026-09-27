@@ -100,3 +100,31 @@ def test_unreachable_abort(tmp_path):
     code = _run(["--out", str(tmp_path)], fake)
     assert code == 5
     assert FAKE_KEY not in _files_text(tmp_path)
+
+
+def test_empty_token_list_exits_2_without_calls(tmp_path, capsys):
+    for tokens in (",", "", " , "):
+        fake = FakeNansenClient(happy_responses())
+        code = _run(["--tokens", tokens, "--out", str(tmp_path)], fake)
+        assert code == 2 and fake.calls == []
+    assert "--tokens" in capsys.readouterr().err
+
+
+def test_invalid_periods_exit_2(tmp_path, capsys):
+    fake = FakeNansenClient(happy_responses())
+    assert _run(["--periods", "1d,2d", "--out", str(tmp_path)], fake) == 2
+    assert fake.calls == [] and "2d" in capsys.readouterr().err
+
+
+def test_round_with_zero_calls_breaks_loop(tmp_path):
+    run = stress.StressRun(FakeNansenClient(happy_responses()), SETTINGS, tmp_path, 0, 50, _nosleep)
+    asyncio.run(asyncio.wait_for(run.run([], "ethereum", ["1d"], 10), timeout=5))
+    assert run.total == 0
+
+
+def test_stress_uses_side_aware_parsing(tmp_path):
+    fake = FakeNansenClient(happy_responses())
+    _run(["--tokens", "PEPE", "--min-calls", "12", "--out", str(tmp_path)], fake)
+    rep = json.loads((tmp_path / "stress_report.json").read_text(encoding="utf-8"))
+    assert rep["parse_stats"].get("wbs_parsed", 0) >= 2
+    assert "wbs_unparsed" not in rep["parse_stats"]

@@ -2,11 +2,12 @@
 
 Smart-money score ``s`` in [-1, 1] combines two parts:
 
-* ``flow_score = tanh(net / scale)`` from the Smart Money row of
-  ``token_recent_flows_summary``. ``scale`` is the gross flow
-  (inflow + outflow) when both are known, so the ratio is "what share of the
-  smart-money volume was net buying"; otherwise a fixed ``flow_scale`` (USD)
-  is used so that ~$100k of net flow counts as a solid move.
+* ``flow_score`` from the Smart Money row of ``token_recent_flows_summary``.
+  When inflow and outflow are both known it is ``net / (inflow + outflow)``:
+  "what share of the smart-money volume was net buying", on the same linear
+  [-1, 1] scale as the buy/sell part. Otherwise only the net figure is known
+  and we squash it with ``tanh(net / flow_scale)`` so that ~$100k of net
+  flow counts as a solid move.
 * ``bs_score = (buy - sell) / (buy + sell)`` from smart-labelled wallets in
   ``token_who_bought_sold`` (BUY and SELL calls).
 
@@ -48,6 +49,8 @@ KINDS = (
     "INSUFFICIENT_DATA",
     "SM_ONLY",
 )
+#: The two headline "smart money vs crowd" cells of the matrix.
+DISAGREEMENT_KINDS = ("CONTRARIAN_BULLISH", "WARNING_BEARISH")
 FEAR_SIDE = {"Fear", "Extreme Fear"}
 GREED_SIDE = {"Greed", "Extreme Greed"}
 _LEVELS = ["Low", "Medium", "High"]
@@ -121,10 +124,11 @@ def build_sm_signal(
     flow_score = None
     if flow is not None and flow.net_usd is not None:
         if flow.inflow_usd is not None and flow.outflow_usd is not None:
-            scale = max(abs(flow.inflow_usd) + abs(flow.outflow_usd), 1.0)
+            gross = max(abs(flow.inflow_usd) + abs(flow.outflow_usd), 1.0)
+            # Clamp: a reported net can disagree slightly with in/out.
+            flow_score = max(-1.0, min(1.0, flow.net_usd / gross))
         else:
-            scale = flow_scale
-        flow_score = math.tanh(flow.net_usd / scale)
+            flow_score = math.tanh(flow.net_usd / flow_scale)
     else:
         reasons.append(("flow_unavailable", {}))
 
@@ -143,11 +147,14 @@ def build_sm_signal(
     avail = [(w, v) for w, v in parts if v is not None]
     score = sum(w * v for w, v in avail) / sum(w for w, _ in avail) if avail else None
 
+    # Wallet count: the flows summary's own count if it has one. Otherwise use
+    # the larger of the buyer/seller lists: the same wallet can appear on both
+    # sides, so adding them would double-count. This is a lower bound.
     wallets = None
     if flow is not None and flow.wallets is not None:
         wallets = flow.wallets
     elif buy is not None and sell is not None:
-        wallets = buy.wallets + sell.wallets
+        wallets = max(buy.wallets, sell.wallets)
 
     return SmartMoneySignal(flow, buy, sell, flow_score, bs_score, score,
                             sm_label(score), sm_strength(score), wallets, reasons)
