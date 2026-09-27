@@ -82,7 +82,7 @@ def test_all_data_tools_fail_gives_insufficient_data(key, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert "Not enough smart-money data" in out
-    assert "Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Extreme Fear" in out
+    assert "Market-wide mood (whole crypto market, BTC-centric; NOT specific to Pepe (PEPE)): Extreme Fear" in out
 
 
 def test_address_skips_search_and_period(key, capsys):
@@ -170,7 +170,7 @@ def test_address_without_symbol_uses_short_address(key, capsys):
     code, _ = cli(["--address", addr, "--lang", "en"])
     out = capsys.readouterr().out
     assert code == 0
-    assert "Token: 0x6982…1933 on ethereum" in out
+    assert "Zalat Smart Money Verdict — 0x6982…1933\n" in out
     assert "0X69825081" not in out
     assert f"Address: {addr}" in out
 
@@ -178,19 +178,21 @@ def test_address_without_symbol_uses_short_address(key, capsys):
 def test_address_with_symbol_no_duplicate_name(key, capsys):
     cli(["PEPE", "--address", "0xabc", "--lang", "en"])
     out = capsys.readouterr().out
-    assert "Token: PEPE on ethereum" in out and "PEPE (PEPE)" not in out
+    assert "Zalat Smart Money Verdict — PEPE\n" in out and "PEPE (PEPE)" not in out
 
 
 def test_resolved_token_shows_name(key, capsys):
     cli(["PEPE", "--lang", "en"])
-    assert "Token: PEPE (Pepe) on ethereum" in capsys.readouterr().out
+    assert "Zalat Smart Money Verdict — Pepe (PEPE)\n" in capsys.readouterr().out
 
 
 def test_disagreement_banner(key, capsys):
     cli(["PEPE"], fng=20)
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines[1] == ">>> DISAGREEMENT: SMART MONEY vs OVERALL MARKET MOOD <<<"
+    # the banner opens section 3 (final verdict)
+    i = lines.index("━━ 3 · FINAL VERDICT ━━")
+    assert lines[i + 1] == ">>> DISAGREEMENT: SMART MONEY vs OVERALL MARKET MOOD <<<"
     assert ">>> تباين: الأموال الذكية عكس مزاج السوق العام <<<" in out
     cli(["PEPE"], fng=80)  # confirmed bullish -> no banner
     assert ">>>" not in capsys.readouterr().out
@@ -455,7 +457,7 @@ def test_real_rest_payloads_end_to_end(capsys):
                 env_file=None)
     out = capsys.readouterr().out
     assert code == 0
-    assert "Token: PEPE (Pepe) on ethereum" in out
+    assert "Zalat Smart Money Verdict — Pepe (PEPE)\n" in out
     assert "Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933" in out
     assert "Net flow: -$1.5k (12 wallets, avg flow (Nansen) $6.8k)" in out
     assert "Smart buyers vs sellers: $2.7k bought / $145.7k sold" in out

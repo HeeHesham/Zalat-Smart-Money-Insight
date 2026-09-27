@@ -28,3 +28,6 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# HTML verdict cards (python -m zalat ... --html)
+cards/

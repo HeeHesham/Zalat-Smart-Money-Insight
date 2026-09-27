@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Callable, Literal
 
 from zalat import __version__
 from zalat.i18n import (
@@ -33,14 +34,25 @@ def short_address(addr: str) -> str:
     return addr if len(addr) <= 12 else f"{addr[:6]}…{addr[-4:]}"
 
 
-def token_label(tok: TokenRef) -> str:
-    """"PEPE (Pepe)"; "PEPE" when there is no distinct name; a shortened
-    address when there is no symbol (``--address`` without a symbol)."""
+def display_name(tok: TokenRef) -> str:
+    """How the token is named everywhere: "ChainLink (LINK)".
+
+    Nansen's name with a trailing " Token" removed (casing kept), then the
+    symbol in brackets. No distinct name -> just the symbol; no symbol
+    (``--address`` only) -> a shortened address.
+    """
     if not tok.symbol:
         return short_address(tok.address)
-    if tok.name and tok.name != tok.symbol:
-        return f"{tok.symbol} ({tok.name})"
+    name = (tok.name or "").strip()
+    if name.lower().endswith(" token"):
+        name = name[: -len(" token")].strip()
+    if name and name != tok.symbol:
+        return f"{name} ({tok.symbol})"
     return tok.symbol
+
+
+#: Kept for backwards compatibility: the old name of :func:`display_name`.
+token_label = display_name
 
 
 def _signed_usd(x: float) -> str:
@@ -56,109 +68,199 @@ def _crowd_name(v: Verdict, lang: Lang) -> str:
     return t(key, lang)
 
 
-def _market_line(v: Verdict, lang: Lang) -> str:
+def _timestamp(v: Verdict) -> str:
+    """"2026-09-27 21:05" (UTC) from the ISO ``generated_at``."""
+    return (v.generated_at or "")[:16].replace("T", " ")
+
+
+# --------------------------------------------------------------------------- #
+# Section model. Every line is a function of the language, so the English and
+# Arabic outputs have exactly the same sections and lines, in the same order.
+# --------------------------------------------------------------------------- #
+LineFn = Callable[[Lang], str]
+#: Notes that belong to the sentiment section; all other notes go to the verdict.
+SENTIMENT_NOTES = ("token_vs_market", "market_unavailable")
+
+
+@dataclass
+class Section:
+    """One block of output: an optional header key and its lines."""
+
+    header: str | None          # i18n key of the section header (None = top header block)
+    lines: list[LineFn] = field(default_factory=list)
+
+
+def _k(key: str, **params: object) -> LineFn:
+    return lambda lang: t(key, lang, **params)
+
+
+def price_line(v: Verdict) -> LineFn:
+    p = v.price
+
+    def fn(lang: Lang) -> str:
+        if p is not None and p.change_pct is not None:
+            return t("price_line", lang, price=fmt_price(p.price_usd), change=fmt_pct(p.change_pct),
+                     window=t(f"window_{p.window}", lang), source=t(f"source_{p.source}", lang))
+        if p is not None and p.price_usd is not None:
+            return t("price_line_no_change", lang, price=fmt_price(p.price_usd))
+        return t("price_na", lang)
+    return fn
+
+
+def market_ctx_line(v: Verdict) -> LineFn:
+    p = v.price
+
+    def fn(lang: Lang) -> str:
+        if p is None or all(x is None for x in (p.market_cap_usd, p.liquidity_usd, p.holders)):
+            return t("market_ctx_na", lang)
+        holders = f"{int(p.holders):,}" if p.holders is not None else "n/a"
+        return t("market_ctx_line", lang, mcap=fmt_usd(p.market_cap_usd),
+                 liq=fmt_usd(p.liquidity_usd), holders=holders)
+    return fn
+
+
+def market_line(v: Verdict) -> LineFn:
     """The ONLY place the Fear & Greed value is printed; always says market-wide."""
     m = v.market_mood
-    if not m.available:
-        return t("market_na", lang)
-    return t("market_line", lang, token=token_label(v.token), label=label(m.label, lang),
-             value=m.value)
+    secondary = v.social is not None and v.social.available
+
+    def fn(lang: Lang) -> str:
+        if not m.available:
+            text = t("market_na", lang)
+        else:
+            text = t("market_line", lang, token=display_name(v.token), label=label(m.label, lang),
+                     value=m.value)
+        return f"{t('secondary_market', lang)} {text}" if secondary else text
+    return fn
 
 
-def _block(v: Verdict, lang: Lang) -> str:
-    """Render the verdict in one language."""
-    tok, sm = v.token, v.sm
-    short, headline, explanation = kind_text(v.kind, lang, v.crowd_source)
-    crowd_name = _crowd_name(v, lang)
-    lines = [t("title", lang)]
-    if v.kind in DISAGREEMENT_KINDS:
-        # The headline case: make it impossible to miss.
-        lines.append(t("banner", lang, crowd_name=crowd_name.upper()))
-    lines += [
-        t("token_line", lang, token=token_label(tok), chain=tok.chain, period=v.period),
-        t("address", lang, address=tok.address),
-        "-" * 60,
-        t("verdict", lang, headline=headline, kind=short),
-        explanation,
-        t("disagree_yes", lang, crowd_name=crowd_name) if v.disagreement else t("disagree_no", lang),
-        "",
-    ]
+def social_line(v: Verdict) -> LineFn:
+    social = v.social
 
-    # --- smart money (primary) ---
-    if sm.label == "Unavailable":
-        lines.append(t("sm_unavailable", lang))
-    else:
-        strength = f" ({label(sm.strength, lang)})" if sm.strength else ""
-        lines.append(t("sm_line", lang, label=label(sm.label, lang), strength=strength,
-                       score=fmt_score(sm.score)))
-    f = sm.flow
-    if f is not None and f.is_empty:
-        lines.append(t("flow_empty", lang))
-    elif f is not None and f.net_usd is not None:
+    def fn(lang: Lang) -> str:
+        if social is not None and social.available:
+            galaxy = f"{social.galaxy_score:.0f}" if social.galaxy_score is not None else "n/a"
+            return t("social_line", lang, symbol=social.symbol or display_name(v.token),
+                     label=label(social.label, lang), sentiment=f"{social.sentiment:.0f}",
+                     galaxy=galaxy)
+        # Not available: the status note (e.g. "not configured - future work").
+        for key, params in v.notes:
+            if key.startswith("social_status_"):
+                return t(key, lang, **params)
+        return t("social_status_not_configured", lang, fallback=v.crowd_source == "market_mood")
+    return fn
+
+
+def _flow_line(v: Verdict) -> LineFn:
+    f = v.sm.flow
+
+    def fn(lang: Lang) -> str:
+        if f is not None and f.is_empty:
+            return t("flow_empty", lang)
+        if f is None or f.net_usd is None:
+            return t("flow_na", lang)
         net = _signed_usd(f.net_usd)
         if f.inflow_usd is not None or f.outflow_usd is not None:
             wallets = (t("wallets_part", lang, wallets=fmt_wallets(f.wallets, lang))
                        if f.wallets is not None else "")
-            lines.append(t("flow_line", lang, net=net, inflow=fmt_usd(f.inflow_usd),
-                           outflow=fmt_usd(f.outflow_usd), wallets=wallets))
-        elif f.avg_usd is not None:
-            lines.append(t("flow_line_avg", lang, net=net,
-                           wallets=fmt_wallets(f.wallets or 0, lang), avg=fmt_usd(f.avg_usd)))
-        else:
-            lines.append(t("flow_line_net", lang, net=net, wallets=_wallets_paren(f, lang)))
+            return t("flow_line", lang, net=net, inflow=fmt_usd(f.inflow_usd),
+                     outflow=fmt_usd(f.outflow_usd), wallets=wallets)
+        if f.avg_usd is not None:
+            return t("flow_line_avg", lang, net=net, wallets=fmt_wallets(f.wallets or 0, lang),
+                     avg=fmt_usd(f.avg_usd))
+        return t("flow_line_net", lang, net=net, wallets=_wallets_paren(f, lang))
+    return fn
+
+
+def build_sections(v: Verdict) -> list[Section]:
+    """The four output blocks: header, 1 on-chain smart money, 2 sentiment, 3 verdict."""
+    sm = v.sm
+    name = display_name(v.token)
+
+    # --- header: what token, when, and plain token facts -------------------
+    header = Section(None, [
+        _k("title", name=name),
+        _k("meta_line", chain=v.token.chain or "?", period=v.period, ts=_timestamp(v)),
+        _k("address", address=v.token.address),
+        price_line(v),
+        market_ctx_line(v),
+    ])
+
+    # --- 1: on-chain smart money (Nansen only) ------------------------------
+    s1 = Section("sec_onchain")
+    if sm.label == "Unavailable":
+        s1.lines.append(_k("sm_unavailable"))
     else:
-        lines.append(t("flow_na", lang))
+        s1.lines.append(lambda lang: t(
+            "sm_line", lang, label=label(sm.label, lang),
+            strength=f" ({label(sm.strength, lang)})" if sm.strength else "",
+            score=fmt_score(sm.score)))
+    s1.lines.append(_flow_line(v))
     if sm.buy is not None and sm.sell is not None:
-        lines.append(t("bs_line", lang, buy=fmt_usd(sm.buy.volume_usd),
-                       sell=fmt_usd(sm.sell.volume_usd), score=fmt_score(sm.bs_score)))
+        s1.lines.append(_k("bs_line", buy=fmt_usd(sm.buy.volume_usd),
+                           sell=fmt_usd(sm.sell.volume_usd), score=fmt_score(sm.bs_score)))
     else:
-        lines.append(t("bs_na", lang))
+        s1.lines.append(_k("bs_na"))
     tp = sm.top_pnl
     if tp is not None and tp.net_usd is not None:
-        lines.append(t("top_pnl_line", lang, net=_signed_usd(tp.net_usd),
-                       wallets=_wallets_paren(tp, lang)))
-
-    # --- price context ---
-    p = v.price
-    if p is not None:
-        if p.change_pct is not None:
-            lines.append(t("price_line", lang, price=fmt_price(p.price_usd),
-                           change=fmt_pct(p.change_pct), window=t(f"window_{p.window}", lang),
-                           source=t(f"source_{p.source}", lang)))
-        elif p.price_usd is not None:
-            lines.append(t("price_line_no_change", lang, price=fmt_price(p.price_usd)))
-        if any(x is not None for x in (p.market_cap_usd, p.liquidity_usd, p.holders)):
-            holders = f"{int(p.holders):,}" if p.holders is not None else "n/a"
-            lines.append(t("market_ctx_line", lang, mcap=fmt_usd(p.market_cap_usd),
-                           liq=fmt_usd(p.liquidity_usd), holders=holders))
-
-    # --- crowd: token social first when it is the primary signal ---
-    social = v.social
-    if social is not None and social.available:
-        galaxy = f"{social.galaxy_score:.0f}" if social.galaxy_score is not None else "n/a"
-        lines.append(t("social_line", lang, symbol=social.symbol or token_label(tok),
-                       label=label(social.label, lang), sentiment=f"{social.sentiment:.0f}",
-                       galaxy=galaxy))
-        lines.append(f"{t('secondary_market', lang)} {_market_line(v, lang)}")
-    else:
-        lines.append(_market_line(v, lang))
-    if v.divergence is not None:
-        lines.append(t("divergence", lang, d=fmt_score(v.divergence), crowd_name=crowd_name))
-
-    lines.append("")
-    lines.append(t("confidence", lang, level=label(v.confidence, lang)))
-    if v.reasons:
-        lines.append(t("why", lang))
-        lines.extend(f"  - {t(key, lang, **params)}" for key, params in v.reasons)
-    notes = list(v.notes)
+        s1.lines.append(lambda lang: t("top_pnl_line", lang, net=_signed_usd(tp.net_usd),
+                                       wallets=_wallets_paren(tp, lang)))
+    if sm.flow_basis:
+        s1.lines.append(_k(f"basis_{sm.flow_basis}"))
     if sm.wbs_truncated:
-        notes.append(("wbs_truncated", {}))
-    if notes:
-        lines.append("")
-        lines.extend(t(key, lang, **params) for key, params in notes)
-    lines.append("")
-    lines.append(DISCLAIMER[lang])
-    return "\n".join(lines)
+        s1.lines.append(_k("wbs_truncated"))
+
+    # --- 2: market sentiment (no on-chain data) -----------------------------
+    s2 = Section("sec_sentiment", [market_line(v), social_line(v)])
+    s2.lines += [_k(key, **params) for key, params in v.notes if key in SENTIMENT_NOTES]
+
+    # --- 3: final verdict ---------------------------------------------------
+    s3 = Section("sec_verdict")
+    if v.kind in DISAGREEMENT_KINDS:
+        s3.lines.append(lambda lang: t("banner", lang, crowd_name=_crowd_name(v, lang).upper()))
+    s3.lines += [
+        lambda lang: t("verdict", lang, headline=kind_text(v.kind, lang, v.crowd_source)[1],
+                       kind=kind_text(v.kind, lang, v.crowd_source)[0]),
+        lambda lang: kind_text(v.kind, lang, v.crowd_source)[2],
+        lambda lang: (t("disagree_yes", lang, crowd_name=_crowd_name(v, lang)) if v.disagreement
+                      else t("disagree_no", lang)),
+    ]
+    if v.divergence is not None:
+        s3.lines.append(lambda lang: t("divergence", lang, d=fmt_score(v.divergence),
+                                       crowd_name=_crowd_name(v, lang)))
+    s3.lines.append(lambda lang: t("confidence", lang, level=label(v.confidence, lang)))
+    if v.reasons:
+        s3.lines.append(_k("why"))
+        s3.lines += [(lambda key, params: (lambda lang: f"  - {t(key, lang, **params)}"))(k, p)
+                     for k, p in v.reasons]
+    other = [(k, p) for k, p in v.notes
+             if k not in SENTIMENT_NOTES and not k.startswith("social_status_")]
+    s3.lines += [_k(k, **p) for k, p in other]
+    s3.lines += [lambda lang: "", lambda lang: DISCLAIMER[lang]]
+    return [header, s1, s2, s3]
+
+
+def _localise(text: str, lang: Lang) -> str:
+    # Number formatters are language-neutral; only "n/a" needs translating.
+    return text.replace("n/a", t("na", lang)) if lang == "ar" else text
+
+
+def section_texts(v: Verdict, lang: Lang) -> list[tuple[str | None, list[str]]]:
+    """``[(header text or None, [line, ...]), ...]`` for one language."""
+    out = []
+    for sec in build_sections(v):
+        head = t(sec.header, lang) if sec.header else None
+        out.append((head, [_localise(fn(lang), lang) for fn in sec.lines]))
+    return out
+
+
+def _block(v: Verdict, lang: Lang) -> str:
+    """Render the verdict in one language (header + 3 titled sections)."""
+    parts = []
+    for head, lines in section_texts(v, lang):
+        block = ([f"━━ {head} ━━"] if head else []) + lines
+        parts.append("\n".join(block))
+    return "\n\n".join(parts)
 
 
 def render_text(v: Verdict, lang: Literal["en", "ar", "both"] = "both") -> str:
@@ -187,6 +289,10 @@ def render_json(v: Verdict) -> str:
         data["social"] = {f.name: None for f in dataclasses.fields(SocialSignal)}
         data["social"]["status"] = "not_configured"
     data["social"]["scope"] = SOCIAL_SCOPE
+    data["display_name"] = display_name(v.token)
+    data["sections"] = {lang: [{"title": head, "lines": lines}
+                               for head, lines in section_texts(v, lang)]
+                        for lang in ("en", "ar")}
     data["disclaimer"] = {"en": DISCLAIMER["en"], "ar": DISCLAIMER["ar"]}
     data["version"] = __version__
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)

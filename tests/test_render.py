@@ -54,7 +54,7 @@ def test_english_text():
     out = render_text(_verdict(), "en")
     assert "Smart money is buying while the overall crypto market is fearful (market-wide mood, not this token)" in out
     assert "Disagreement: YES" in out
-    assert "NOT specific to PEPE (Pepe)" in out
+    assert "NOT specific to Pepe (PEPE)" in out
     assert "+$1.2M" in out and "$800.0k bought" in out
     assert out.rstrip().endswith(DISCLAIMER_EN)
     assert "ليست" not in out
@@ -63,7 +63,7 @@ def test_english_text():
 def test_arabic_text():
     out = render_text(_verdict(), "ar")
     assert "الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)" in out
-    assert "ليس خاصاً بـ PEPE (Pepe)" in out  # market-wide label in Arabic
+    assert "ليس خاصاً بـ Pepe (PEPE)" in out  # market-wide label in Arabic
     assert "+$1.2M" in out  # Western digits kept
     assert out.rstrip().endswith(DISCLAIMER_AR)
     assert "Not financial advice" not in out
@@ -86,7 +86,7 @@ def test_insufficient_data_render():
     v = decide(TOK, "1d", build_sm_signal(None, None, None), signal_from_value(30))
     out = render_text(v, "both")
     assert "Smart money: Unavailable" in out and "الأموال الذكية: غير متاح" in out
-    assert "NOT specific to PEPE (Pepe)): Fear (30/100)" in out
+    assert "NOT specific to Pepe (PEPE)): Fear (30/100)" in out
 
 
 def test_json_is_valid_and_complete():
@@ -132,7 +132,8 @@ def test_arabic_wording():
 
 
 def test_banner_only_for_disagreement():
-    assert render_text(_verdict(fng=20), "en").splitlines()[1].startswith(">>> DISAGREEMENT")
+    lines = render_text(_verdict(fng=20), "en").splitlines()
+    assert lines[lines.index("━━ 3 · FINAL VERDICT ━━") + 1].startswith(">>> DISAGREEMENT")
     assert ">>>" not in render_text(_verdict(fng=80), "both")
     assert ">>>" not in render_text(_verdict(fng=None), "both")
 
@@ -144,7 +145,7 @@ def test_no_dead_i18n_keys():
     root = pathlib.Path(__file__).resolve().parent.parent / "zalat"
     code = "".join(p.read_text(encoding="utf-8") for p in root.glob("*.py") if p.name != "i18n.py")
     # Keys built dynamically in code (f-strings / t() internals):
-    dynamic = ("source_", "social_status_", "crowd_name_", "window_")
+    dynamic = ("source_", "social_status_", "crowd_name_", "window_", "basis_")
     internal = {"fallback_clause"}
     for key in STRINGS["en"]:
         if key.startswith(dynamic) or key in internal:
@@ -158,7 +159,7 @@ def test_token_label():
 
     assert token_label(TokenRef("PEPE", "PEPE", "0x1", "ethereum")) == "PEPE"
     assert token_label(TokenRef("PEPE", "", "0x1", "ethereum")) == "PEPE"
-    assert token_label(TokenRef("PEPE", "Pepe", "0x1", "ethereum")) == "PEPE (Pepe)"
+    assert token_label(TokenRef("PEPE", "Pepe", "0x1", "ethereum")) == "Pepe (PEPE)"
 
 
 def test_small_volume_reason_rendered_both_languages():
@@ -172,7 +173,7 @@ def test_small_volume_reason_rendered_both_languages():
 def test_address_only_token_label_and_json_symbol():
     tok = TokenRef("", "", "0x6982508145454ce325ddbe47a25d4ec3d2311933", "ethereum")
     v = decide(tok, "1d", build_sm_signal(None, None, None), signal_from_value(40))
-    assert "Token: 0x6982…1933 on ethereum" in render_text(v, "en")
+    assert "Zalat Smart Money Verdict — 0x6982…1933\n" in render_text(v, "en")
     data = json.loads(render_json(v))
     assert data["token"]["symbol"] == ""
     assert data["token"]["address"] == tok.address
@@ -284,7 +285,8 @@ def test_price_lines():
     assert "24h" not in ar
     v2 = _v2(price=PriceContext(4e-06, None, "24h", None, None))
     assert "Price: $0.000004 (24h change unavailable)" in render_text(v2, "en")
-    assert "Price:" not in render_text(_v2(price=None), "en")
+    assert "Price: unavailable" in render_text(_v2(price=None), "en")
+    assert "السعر: غير متاح" in render_text(_v2(price=None), "ar")
 
 
 def test_json_sprint2_fields():

@@ -224,9 +224,17 @@ python -m zalat PEPE --raw
 
 # Save raw output to a file you can share (the key is never in it)
 python -m zalat PEPE --raw 2> raw_output.txt
+
+# Also write a bilingual HTML card (opens offline in any browser)
+python -m zalat LINK --period 7d --html                 # -> cards/zalat_LINK_7d_<YYYYMMDD-HHMM>.html
+python -m zalat LINK --period 7d --html my_card.html    # choose the path
+
+# Rebuild a card later from saved JSON
+python -m zalat LINK --period 7d --json > link.json
+python -m zalat.card --from-json link.json --out link.html
 ```
 
-Other options: `--timeout 60` (network timeout in seconds), `-v` (debug log, key redacted), `--version`, `--help`.
+Other options: `--html [PATH]` (bilingual HTML card, see below), `--timeout 60` (network timeout in seconds), `-v` (debug log, key redacted), `--version`, `--help`.
 
 ### Exit codes
 
@@ -243,125 +251,150 @@ LunarCrush, Fear & Greed and `token_info` problems never change the exit code. T
 
 ---
 
+## Output structure
+
+Every run prints the same four blocks, in the same order, in English and then in Arabic. `--lang en|ar` prints one
+language only. Every English line has an Arabic twin in the same place, and the tests check this.
+
+| Block | What it contains | What it never contains |
+|---|---|---|
+| **Header** | Token name, e.g. `ChainLink (LINK)` (Nansen's name without a trailing "Token"), chain, lookback, UTC time, address, price + change, market cap / liquidity / holders | — |
+| **━━ 1 · ON-CHAIN SMART MONEY (Nansen) ━━** | Smart-money label and score, net flow (wallets, Nansen's avg flow), smart buyers vs sellers, top-PnL traders (context), what the flow was scored against, notes about the lists | Any sentiment |
+| **━━ 2 · MARKET SENTIMENT ━━** | Market-wide Fear & Greed line (always says "NOT specific to <token>"), token social sentiment (LunarCrush) or the "not configured / future work" note, token-vs-market note | Any on-chain data |
+| **━━ 3 · FINAL VERDICT ━━** | Disagreement banner (if any), verdict headline and type, explanation, disagreement yes/no and with which crowd, divergence, confidence and **Why**, price-context notes, disclaimer | — |
+
+`--json` keeps all earlier keys and adds `display_name` and `sections` (the same four blocks, as text, for `en` and
+`ar`).
+
+## HTML card (`--html`)
+
+`--html` also writes **one self-contained HTML file**. It has inline CSS, inline SVG and a few lines of inline
+JavaScript for tooltips, with no external fonts, scripts or CDNs, so it opens offline. The terminal prints its path.
+The default path is `cards/zalat_<SYMBOL>_<period>_<YYYYMMDD-HHMM>.html`, and `cards/` is git-ignored.
+
+- **Layout:** it has the same header and three sections as the terminal. Each section shows its charts first, then the
+  **English and Arabic text side by side** (Arabic right-to-left). The columns stack on screens narrower than 760px.
+- **Charts:** all are inline SVG, with one axis each.
+  - *Smart buyers vs sellers (USD)*: two bars on one zero-based axis.
+  - *Smart-money net flow (USD)*: one bar growing left (outflow) or right (inflow) from a centred zero.
+  - *Market-wide mood*: a 0–100 gauge tagged "market-wide". The LunarCrush gauge appears when configured, otherwise a
+    muted "not configured" tile.
+  - *Verdict*: stat tiles for score, confidence and divergence.
+- **Missing data:** shown as muted text, never as a zero-length bar.
+- **Readability:**
+  - Bought/inflow and sold/outflow use a blue/red pair checked for colour-blind readers in light and dark mode.
+  - Values are always written as text.
+  - Every bar or marker shows a tooltip on hover or keyboard focus.
+  - Each chart has a hidden data table for screen readers.
+  - Light and dark mode follow your system setting.
+
+**To open or record it:** double-click the file, or run `open cards/<file>.html` (macOS), `start cards\<file>.html`
+(Windows) or `xdg-open cards/<file>.html` (Linux).
+- For a screen recording, set the browser window to **1280×720** at 100% zoom. The header, verdict pill,
+  disagreement banner and section 1 charts fit on the first screen, and you can scroll to sections 2 and 3.
+- For a phone-sized view, use the browser's device toolbar (e.g. 390px wide).
+
 ## Sample output
 
-**Real output** from a live run on 2026-09-27: `python -m zalat LINK --period 7d` with the REST backend, no LunarCrush
-key, English part only. Real Nansen and Fear & Greed data at that moment, not a prediction:
+**Real output** from a live run on 2026-09-27: `python -m zalat LINK --period 7d --html` with the REST backend, no
+LunarCrush key. Real Nansen and Fear & Greed data at that moment, not a prediction:
 
 ```text
-Zalat Smart Money Verdict
->>> DISAGREEMENT: SMART MONEY vs OVERALL MARKET MOOD <<<
-Token: LINK (ChainLink Token) on ethereum, lookback 7d
+Zalat Smart Money Verdict — ChainLink (LINK)
+Chain: ethereum · Lookback: 7d · Generated: 2026-09-27 21:11 UTC
 Address: 0x514910771af9ca656af840dff83e8264ecf986ca
-------------------------------------------------------------
-VERDICT: Smart money is selling while the overall crypto market is greedy (market-wide mood, not this token)  [Warning (Bearish)]
-The whole crypto market is greedy while smart-money wallets distribute this token. The mood describes the market, not this token's own crowd.
-Disagreement: YES - smart money and the overall market mood point in opposite directions.
+Price: $14.01 (-0.2% vs the previous daily close (UTC), source Nansen OHLCV)
+Market context: market cap $10.5B, liquidity $20.3M, holders 642,736
 
+━━ 1 · ON-CHAIN SMART MONEY (Nansen) ━━
 Smart money: Distributing (strong), score -0.81
   - Net flow: -$117.7k (4 wallets, avg flow (Nansen) $27.0k)
   - Smart buyers vs sellers: $13.6k bought / $132.0k sold (score -0.81)
   - Top PnL traders net flow (context, not scored): -$6.6M (67 wallets)
-Price: $14.07 (0.0% vs the previous daily close (UTC), source Nansen OHLCV)
-Market context: market cap $10.5B, liquidity $20.4M, holders 642,713
-Market-wide mood (whole crypto market, BTC-centric; NOT specific to LINK (ChainLink Token)): Greed (70/100) - alternative.me Fear & Greed
-Divergence score: +0.32 (positive = smart money leans against the overall market mood)
+Flow scored against: smart wallets' own bought + sold USD
 
-Confidence: Medium
-Why:
-  - only the market-wide mood was available, not this token's own crowd (capped at Medium)
-
+━━ 2 · MARKET SENTIMENT ━━
+Market-wide mood (whole crypto market, BTC-centric; NOT specific to ChainLink (LINK)): Greed (70/100) - alternative.me Fear & Greed
 Token social sentiment: not configured - needs a paid LunarCrush API plan (set LUNARCRUSH_API_KEY). Future work; this verdict compares smart money with market-wide mood instead.
 
-Not financial advice. For research and education only.
-```
-
-Here smart wallets sold far more LINK than they bought over 7 days. The Smart Trader net flow (-$117.7k) is compared
-with their own bought + sold volume ($145.6k), and the market-wide mood was Greed. The result is a Warning (Bearish),
-capped at Medium confidence because no token-specific crowd signal was configured. The two samples below are **illustrative only**. Their numbers
-are made up to show the other verdict formats, and are not real market data.
-
-**(a) Default: no LunarCrush key.** The crowd is the market-wide mood, and the output says so:
-
-```text
-Zalat Smart Money Verdict
+━━ 3 · FINAL VERDICT ━━
 >>> DISAGREEMENT: SMART MONEY vs OVERALL MARKET MOOD <<<
-Token: PEPE (Pepe) on ethereum, lookback 1d
-Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933
-------------------------------------------------------------
-VERDICT: Smart money is buying while the overall crypto market is fearful (market-wide mood, not this token)  [Contrarian Bullish]
-The whole crypto market is fearful while smart-money wallets accumulate this token. Worth a closer look, but the mood describes the market, not this token's own crowd.
+VERDICT: Smart money is selling while the overall crypto market is greedy (market-wide mood, not this token)  [Warning (Bearish)]
+The whole crypto market is greedy while smart-money wallets distribute this token. The mood describes the market, not this token's own crowd.
 Disagreement: YES - smart money and the overall market mood point in opposite directions.
-
-Smart money: Accumulating (strong), score +0.64
-  - Net flow: +$1.2M (in $1.5M / out $300.0k, 12 wallets)
-  - Smart buyers vs sellers: $800.0k bought / $200.0k sold (score +0.60)
-Price: $0.000004 (-5.2% over 24h, source Nansen token_info)
-Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Extreme Fear (22/100) - alternative.me Fear & Greed
-Divergence score: +0.36 (positive = smart money leans against the overall market mood)
-
+Divergence score: +0.32 (positive = smart money leans against the overall market mood)
 Confidence: Medium
 Why:
   - only the market-wide mood was available, not this token's own crowd (capped at Medium)
-
-Price context: price falling while smart money buys (accumulation on a dip).
-Token social sentiment: not configured - needs a paid LunarCrush API plan (set LUNARCRUSH_API_KEY). Future work; this verdict compares smart money with market-wide mood instead.
 
 Not financial advice. For research and education only.
 
 ============================================================
 
-حكم زلط للأموال الذكية
+حكم زلط للأموال الذكية — ChainLink (LINK)
+الشبكة: ethereum · الفترة: 7d · وقت الإصدار: 2026-09-27 21:11 UTC
+العنوان: 0x514910771af9ca656af840dff83e8264ecf986ca
+السعر: $14.01 (-0.2% مقارنة بإغلاق اليوم السابق (UTC)، المصدر Nansen OHLCV)
+سياق السوق: القيمة السوقية $10.5B، السيولة $20.3M، عدد الحاملين 642,736
+
+━━ 1 · الأموال الذكية على السلسلة (Nansen) ━━
+الأموال الذكية: تصريف (قوي)، الدرجة -0.81
+  - صافي التدفق: -$117.7k (4 محافظ، متوسط التدفق (Nansen) $27.0k)
+  - المشترون مقابل البائعين الأذكياء: شراء $13.6k / بيع $132.0k (الدرجة -0.81)
+  - صافي تدفق أعلى المتداولين ربحاً (للسياق، غير محتسب): -$6.6M (67 محفظة)
+أساس احتساب التدفق: حجم شراء + بيع المحافظ الذكية نفسها بالدولار
+
+━━ 2 · معنويات السوق ━━
+مزاج السوق العام (سوق الكريبتو بأكمله، يتمحور حول البيتكوين؛ ليس خاصاً بـ ChainLink (LINK)): طمع (70/100) - مؤشر الخوف والطمع alternative.me
+المشاعر الاجتماعية الخاصة بالعملة: غير مُفعَّلة - تتطلب اشتراكاً مدفوعاً في LunarCrush (عيّن LUNARCRUSH_API_KEY). عمل مستقبلي؛ هذا الحكم يقارن الأموال الذكية بمزاج السوق العام بدلاً منها.
+
+━━ 3 · الحكم النهائي ━━
 >>> تباين: الأموال الذكية عكس مزاج السوق العام <<<
-العملة: PEPE (Pepe) على شبكة ethereum، الفترة 1d
-العنوان: 0x6982508145454ce325ddbe47a25d4ec3d2311933
-------------------------------------------------------------
-الحكم: الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)  [صعود عكس مزاج السوق]
-سوق الكريبتو بأكمله خائف بينما محافظ الأموال الذكية تُجمِّع هذه العملة. يستحق نظرة أعمق، لكن المزاج يصف السوق وليس جمهور هذه العملة.
+الحكم: الأموال الذكية تبيع بينما يسيطر الطمع على سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)  [تحذير: بيع وسط طمع السوق]
+يسيطر الطمع على سوق الكريبتو بأكمله بينما محافظ الأموال الذكية تُصرِّف هذه العملة. المزاج يصف السوق وليس جمهور هذه العملة.
 تباين: نعم - الأموال الذكية ومزاج السوق العام في اتجاهين متعاكسين.
-
-الأموال الذكية: تجميع (قوي)، الدرجة +0.64
-  - صافي التدفق: +$1.2M (وارد $1.5M / صادر $300.0k، 12 محفظة)
-  - المشترون مقابل البائعين الأذكياء: شراء $800.0k / بيع $200.0k (الدرجة +0.60)
-السعر: $0.000004 (-5.2% خلال 24 ساعة، المصدر Nansen token_info)
-مزاج السوق العام (سوق الكريبتو بأكمله، يتمحور حول البيتكوين؛ ليس خاصاً بـ PEPE (Pepe)): خوف شديد (22/100) - مؤشر الخوف والطمع alternative.me
-درجة التباين: +0.36 (موجبة = الأموال الذكية عكس مزاج السوق العام)
-
+درجة التباين: +0.32 (موجبة = الأموال الذكية عكس مزاج السوق العام)
 الثقة: متوسطة
 الأسباب:
   - توفر مزاج السوق العام فقط وليس جمهور هذه العملة (الحد الأقصى: متوسطة)
 
-سياق السعر: السعر يهبط بينما الأموال الذكية تشتري (تجميع عند الانخفاض).
-المشاعر الاجتماعية الخاصة بالعملة: غير مُفعَّلة - تتطلب اشتراكاً مدفوعاً في LunarCrush (عيّن LUNARCRUSH_API_KEY). عمل مستقبلي؛ هذا الحكم يقارن الأموال الذكية بمزاج السوق العام بدلاً منها.
-
 ليست نصيحة مالية. للبحث والتعليم فقط.
+
+HTML card: cards/zalat_LINK_7d_20260927-2111.html
 ```
 
-**(b) With a paid LunarCrush key:** the token's own social crowd is the primary crowd, and the market-wide mood is
-shown as secondary context (English part only):
+Here smart wallets sold far more LINK than they bought over 7 days. The Smart Trader net flow (-$117.7k) is compared
+with their own bought + sold volume ($145.6k), and the market-wide mood was Greed. The result is a Warning (Bearish),
+capped at Medium confidence because no token-specific crowd signal was configured.
+
+**Illustrative only (made-up numbers): with a paid LunarCrush key.** The token's own social crowd becomes the
+primary crowd, and the market-wide mood is shown as secondary context (English part only):
 
 ```text
-Zalat Smart Money Verdict
->>> DISAGREEMENT: SMART MONEY vs TOKEN'S SOCIAL CROWD <<<
-Token: PEPE (Pepe) on ethereum, lookback 1d
+Zalat Smart Money Verdict — Pepe (PEPE)
+Chain: ethereum · Lookback: 1d · Generated: 2026-09-27 21:12 UTC
 Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933
-------------------------------------------------------------
-VERDICT: Smart money is buying while this token's social crowd is bearish  [Contrarian Bullish]
-Social sentiment about this token is negative while smart-money wallets accumulate it. This is the kind of disagreement worth a closer look.
-Disagreement: YES - smart money and the token's social crowd point in opposite directions.
+Price: $0.000004 (-0.1% vs the previous daily close (UTC), source Nansen OHLCV)
+Market context: unavailable
 
+━━ 1 · ON-CHAIN SMART MONEY (Nansen) ━━
 Smart money: Accumulating (strong), score +0.64
   - Net flow: +$1.2M (in $1.5M / out $300.0k, 12 wallets)
   - Smart buyers vs sellers: $800.0k bought / $200.0k sold (score +0.60)
-Price: $0.000004 (-5.2% over 24h, source Nansen token_info)
+Flow scored against: smart-money inflow + outflow
+
+━━ 2 · MARKET SENTIMENT ━━
+Secondary context - Market-wide mood (whole crypto market, BTC-centric; NOT specific to Pepe (PEPE)): Greed (72/100) - alternative.me Fear & Greed
 Token social sentiment (PEPE, LunarCrush): Bearish - 25% positive, Galaxy Score 65
-Secondary context - Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Greed (72/100) - alternative.me Fear & Greed
-Divergence score: +0.32 (positive = smart money leans against the token's social crowd)
-
-Confidence: High
-
-Price context: price falling while smart money buys (accumulation on a dip).
 Note: this token's crowd diverges from the overall market mood.
+
+━━ 3 · FINAL VERDICT ━━
+>>> DISAGREEMENT: SMART MONEY vs TOKEN'S SOCIAL CROWD <<<
+VERDICT: Smart money is buying while this token's social crowd is bearish  [Contrarian Bullish]
+Social sentiment about this token is negative while smart-money wallets accumulate it. This is the kind of disagreement worth a closer look.
+Disagreement: YES - smart money and the token's social crowd point in opposite directions.
+Divergence score: +0.32 (positive = smart money leans against the token's social crowd)
+Confidence: High
 
 Not financial advice. For research and education only.
 ```
