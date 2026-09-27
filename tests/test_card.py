@@ -176,44 +176,129 @@ def test_build_sections_shape():
     assert section_texts(make(), "ar")[1][0] == "1 · الأموال الذكية على السلسلة (Nansen)"
 
 
-# ---- card ----------------------------------------------------------------------------------
-def test_card_is_self_contained_and_bilingual(tmp_path):
+# ---- card: "The Face-off" -------------------------------------------------------------------
+def _root(html, lang):
+    m = re.search(rf'<div class="root" lang="{lang}"[^>]*>(.*?)</footer></div>', html, re.S)
+    assert m, lang
+    return m.group(0)
+
+
+def test_card_is_self_contained():
     html = render_card(make())
     assert html.startswith("<!doctype html>")
     assert not re.search(r'(src|href)\s*=\s*["\']?https?:', html, re.I)
-    assert "@import" not in html and "url(" not in html and "<link" not in html
-    assert 'dir="rtl"' in html and 'lang="ar"' in html and 'lang="en"' in html
-    assert "ChainLink (LINK)" in html and "Warning (Bearish)" in html
-    assert "تحذير: بيع وسط طمع السوق" in html
-    for head in HEADERS_EN:
-        assert head in html
-    assert html.count("<svg") == 3  # buy/sell bars, net flow, F&G gauge
-    assert "Not configured (needs a paid LunarCrush plan)" in html  # social placeholder
-    assert html.count('class="sr-only"') == 3  # one data table per chart
-    assert "prefers-color-scheme: dark" in html and "background: var(--page)" in html
-    assert 'class="mark"' in html and "data-tip=" in html
-    assert "#2a78d6" in html and "#e34948" in html  # validated diverging pair
+    assert not re.search(r"url\((?!#)", html)          # only internal gradient refs
+    assert "@import" not in html and "<link" not in html and "<script src" not in html
+    assert "<style>" in html and "<script>" in html
 
 
-def test_card_placeholders_never_fake_bars():
-    html = render_card(make(fng=None, flow="empty", social="denied"))
-    assert html.count("<svg") == 0
-    assert "no smart-money flow in this period" in html
-    assert "no smart-money buys or sells in this period" in html
-    assert "Market-wide mood (whole crypto market): unavailable" in html
-    assert "HTTP 402" in html
-    html2 = render_card(make(flow="none", social="ok"))
-    assert "Data unavailable for this period" in html2
-    assert html2.count("<svg") == 2  # F&G + LunarCrush gauges only
+def test_card_has_both_languages_with_parity():
+    html = render_card(make())
+    en, ar = _root(html, "en"), _root(html, "ar")
+    assert 'dir="rtl"' in ar and 'dir="ltr"' in en
+    # same content blocks, same order, in both languages
+    keys = lambda h: re.findall(r'data-k="([a-z-]+)"', h)  # noqa: E731
+    assert keys(en) == keys(ar) and len(keys(en)) > 10
+    assert "Smart money is selling into market greed." in en
+    assert "الأموال الذكية تبيع وسط طمع السوق." in ar
+    assert "whole market, not LINK" in en and "السوق كله، ليس" in ar
+    assert en.count("<svg") == ar.count("<svg")
+    # default language is visible, the other hidden
+    assert re.search(r'<div class="root" lang="en"[^>]*data-lang="en">', html)
+    assert re.search(r'<div class="root" lang="ar"[^>]*data-lang="ar" hidden>', html)
+    html_ar = render_card(make(), "ar")
+    assert re.search(r'<div class="root" lang="en"[^>]*data-lang="en" hidden>', html_ar)
+    assert html_ar.startswith('<!doctype html>\n<html lang="ar" dir="rtl">')
 
 
-def test_net_flow_bar_direction_and_labels():
-    neg = render_card(make(flow="rest"))
-    assert "-$117.7k" in neg and "var(--neg)" in neg
-    pos = render_card(make(flow="inout"))
-    assert "+$1.2M" in pos and "var(--pos)" in pos
-    # symmetric domain = max(|net|, bought + sold) rounded up
-    assert "-$200.0k" in neg and "+$200.0k" in neg
+def test_card_hero_badge_stamp_and_pips():
+    en = _root(render_card(make()), "en")
+    assert "Warning (Bearish)" in en and 'class="stamp disagree"' in en and "Disagree" in en
+    assert en.count('<i class="on"></i>') == 2  # Medium = 2 of 3 pips
+    bull = _root(render_card(make(fng=80, flow="inout", social="off")), "en")
+    assert 'class="stamp agree"' in bull and "Agree" in bull
+    assert "Smart money and the market are both bullish." in bull
+    social = _root(render_card(make(fng=80, flow="rest", social="ok")), "en")
+    assert "Smart money and this token&#x27;s crowd are both bearish." in social
+
+
+def test_card_faceoff_charts_and_vs():
+    html = render_card(make())
+    en = _root(html, "en")
+    assert 'class="faceoff clash"' in en and "Selling" in en
+    assert "Smart buyers vs sellers" in en and "Bought" in en and "Sold" in en
+    assert "Net flow" in en and "-$117.7k" in en
+    assert "var(--buy)" in en and "var(--sell)" in en
+    assert en.count('<svg class="bar') == 2 and en.count('<svg class="gauge') == 1
+    assert en.count('class="sr-only"') == 3          # one data table per chart
+    assert 'class="vs"' in en and "↓" in en and "↑" in en  # selling vs greedy market
+    assert "#2f96c8" in html and "#e45f57" in html   # validated dark buy/sell pair
+    assert "#1f7fc0" in html and "#d4483b" in html   # validated light pair
+
+
+def test_card_hides_missing_data():
+    no_bs = _root(render_card(make(flow="rest", social="off")), "en")
+    assert 'data-k="split"' in no_bs  # has buy/sell
+    v = make(flow="none")
+    en = _root(render_card(v), "en")
+    assert 'data-k="sm-card"' not in en and "no smart-money signal" in en
+    assert "unavailable" not in en.split("<details")[0].lower()
+    flow_only = make()
+    flow_only.sm.buy = flow_only.sm.sell = None
+    fo = _root(render_card(flow_only), "en")
+    assert 'data-k="split"' not in fo and 'data-k="net"' in fo
+    empty = _root(render_card(make(flow="empty")), "en")
+    assert 'data-k="split"' not in empty and 'data-k="net"' not in empty
+    no_fng = _root(render_card(make(fng=None, social="off")), "en")
+    assert 'data-k="mood-card"' not in no_fng and "no crowd signal" in no_fng
+    assert 'class="faceoff solo"' in no_fng
+    no_price = _root(render_card(make(price="none")), "en")
+    assert 'data-k="price"' not in no_price and 'data-k="change"' not in no_price
+    assert 'data-k="social"' not in _root(render_card(make(social="denied")), "en")
+    assert 'data-k="social"' in _root(render_card(make(social="ok")), "en")
+
+
+def test_card_details_collapsed_and_complete():
+    html = render_card(make())
+    en = _root(html, "en")
+    assert re.search(r'<details class="details" data-k="details">', en)  # no "open"
+    det = en.split("<details")[1]
+    for text in ("0x514910771af9ca656af840dff83e8264ecf986ca", "Lookback: 7d", "UTC", "avg flow (Nansen)",
+                 "Top PnL traders", "Flow scored against", "Divergence score", "Why:", "holders 642,713",
+                 "LunarCrush API plan", "Sources: Nansen", "Not financial advice"):
+        assert text in det, text
+    assert "Sources" in det and "الأموال الذكية" not in det
+
+
+def test_card_footer_exact():
+    html = render_card(make())
+    assert ('<footer class="foot" data-k="footer">Zalat Smart Money Insight. Data: Nansen, alternative.me. '
+            "Not financial advice.</footer>") in html
+    ar = _root(html, "ar")
+    plain = re.sub(r"<[^>]+>", "", ar.split('<footer class="foot" data-k="footer">')[1])
+    assert plain == "زلط لرؤى الأموال الذكية. البيانات: Nansen و alternative.me. ليست نصيحة مالية."
+
+
+def test_card_toggle_and_motion():
+    html = render_card(make())
+    assert html.count('<div class="toggle"') == 2 and 'data-set="ar"' in html and "عربي" in html
+    assert "location.hash" in html and "e.key==='l'" in html
+    assert "prefers-reduced-motion: reduce" in html and "prefers-color-scheme: light" in html
+    assert "@keyframes grow" in html and "@keyframes sweep" in html and "@keyframes pop" in html
+
+
+def test_card_token_identity():
+    from zalat.card import monogram, token_parts
+
+    assert token_parts(LINK) == ("ChainLink", "LINK")
+    assert monogram(LINK)[0] == "LI" and monogram(LINK) == monogram(LINK)
+    en = _root(render_card(make()), "en")
+    assert '<div class="name" dir="ltr">ChainLink</div>' in en and '<span class="chip">LINK</span>' in en
+
+
+def test_card_count_up_keeps_ltr():
+    ar = _root(render_card(make()), "ar")
+    assert re.search(r'dir="ltr" data-num="117.7" data-dec="1" data-pre="-\$" data-suf="k"', ar)
 
 
 def test_nice_max_and_isolation():
@@ -255,6 +340,19 @@ def test_from_json_roundtrip(tmp_path, capsys):
     assert card_main(["--from-json", str(tmp_path / "missing.json")]) == 2
 
 
+def test_from_json_roundtrip(tmp_path, capsys):
+    v = make(social="ok", truncated=True)
+    src = tmp_path / "v.json"
+    src.write_text(render_json(v), encoding="utf-8")
+    rebuilt = verdict_from_dict(json.loads(src.read_text(encoding="utf-8")))
+    assert render_text(rebuilt, "both") == render_text(v, "both")
+    out = tmp_path / "card.html"
+    assert card_main(["--from-json", str(src), "--out", str(out), "--lang", "ar"]) == 0
+    assert str(out) in capsys.readouterr().out and out.exists()
+    assert out.read_text(encoding="utf-8").startswith('<!doctype html>\n<html lang="ar"')
+    assert card_main(["--from-json", str(tmp_path / "missing.json")]) == 2
+
+
 def test_cli_html_default_path_and_no_key(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NANSEN_API_KEY", FAKE_KEY)
@@ -279,10 +377,9 @@ def test_cli_html_with_json_keeps_stdout_json(tmp_path, capsys):
     assert f"HTML card: {target}" in cap.err and target.exists()
 
 
-def test_card_banner_not_repeated_in_section_3_text():
-    html = render_card(make())
-    assert html.count("&gt;&gt;&gt; DISAGREEMENT") == 1  # only the top banner
-    sec3 = html[html.index("3 · FINAL VERDICT"):]
-    assert "&gt;&gt;&gt;" not in sec3 and 'class="tiles"' in sec3
-    # terminal output keeps it
-    assert ">>> DISAGREEMENT" in render_text(make(), "en")
+def test_cli_card_lang_option(tmp_path, capsys):
+    fake = FakeNansenClient(real_responses())
+    target = tmp_path / "ar.html"
+    code = main(["PEPE", "--html", str(target), "--card-lang", "ar"], client_factory=fake.factory,
+                fng_fetcher=fng_const(70), env_file=None)
+    assert code == 0 and '<html lang="ar" dir="rtl">' in target.read_text(encoding="utf-8")

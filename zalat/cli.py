@@ -94,6 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--html", nargs="?", const="", default=None, metavar="PATH",
                    help="also write a bilingual HTML card (default path: "
                         "cards/zalat_<SYMBOL>_<period>_<YYYYMMDD-HHMM>.html)")
+    p.add_argument("--card-lang", choices=("en", "ar"), default="en",
+                   help="language the HTML card opens in (default: en; it contains both)")
     p.add_argument("--raw", action="store_true",
                    help="also print the raw text of every Nansen tool call (and the LunarCrush status) to stderr")
     p.add_argument("--timeout", type=float, default=None,
@@ -264,7 +266,7 @@ async def run(
     verdict = decide(token, args.period, sm, market, social, price)
     out = render_json(verdict) if args.json else render_text(verdict, args.lang)
     if getattr(args, "html", None) is not None:
-        path = write_card(verdict, args.html or None)
+        path = write_card(verdict, args.html or None, getattr(args, "card_lang", "en"))
         if args.json:
             _err(f"HTML card: {path}", settings)  # keep stdout pure JSON
         else:

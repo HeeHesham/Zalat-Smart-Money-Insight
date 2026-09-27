@@ -228,10 +228,11 @@ python -m zalat PEPE --raw 2> raw_output.txt
 # Also write a bilingual HTML card (opens offline in any browser)
 python -m zalat LINK --period 7d --html                 # -> cards/zalat_LINK_7d_<YYYYMMDD-HHMM>.html
 python -m zalat LINK --period 7d --html my_card.html    # choose the path
+python -m zalat LINK --period 7d --html --card-lang ar  # card opens in Arabic (it contains both)
 
 # Rebuild a card later from saved JSON
 python -m zalat LINK --period 7d --json > link.json
-python -m zalat.card --from-json link.json --out link.html
+python -m zalat.card --from-json link.json --out link.html   # add --lang ar to open in Arabic
 ```
 
 Other options: `--html [PATH]` (bilingual HTML card, see below), `--timeout 60` (network timeout in seconds), `-v` (debug log, key redacted), `--version`, `--help`.
@@ -266,33 +267,52 @@ language only. Every English line has an Arabic twin in the same place, and the 
 `--json` keeps all earlier keys and adds `display_name` and `sections` (the same four blocks, as text, for `en` and
 `ar`).
 
-## HTML card (`--html`)
+## HTML card (`--html`): "The Face-off"
 
-`--html` also writes **one self-contained HTML file**. It has inline CSS, inline SVG and a few lines of inline
-JavaScript for tooltips, with no external fonts, scripts or CDNs, so it opens offline. The terminal prints its path.
-The default path is `cards/zalat_<SYMBOL>_<period>_<YYYYMMDD-HHMM>.html`, and `cards/` is git-ignored.
+`--html` also writes **one self-contained HTML file**. It has inline CSS, SVG and a little JavaScript, and no external
+fonts, scripts or CDNs, so it opens offline. The terminal prints its path. The default path is
+`cards/zalat_<SYMBOL>_<period>_<YYYYMMDD-HHMM>.html`, and `cards/` is git-ignored. It is built to give you **the
+verdict in five seconds** and fits one 1280×720 screen:
 
-- **Layout:** it has the same header and three sections as the terminal. Each section shows its charts first, then the
-  **English and Arabic text side by side** (Arabic right-to-left). The columns stack on screens narrower than 760px.
-- **Charts:** all are inline SVG, with one axis each.
-  - *Smart buyers vs sellers (USD)*: two bars on one zero-based axis.
-  - *Smart-money net flow (USD)*: one bar growing left (outflow) or right (inflow) from a centred zero.
-  - *Market-wide mood*: a 0–100 gauge tagged "market-wide". The LunarCrush gauge appears when configured, otherwise a
-    muted "not configured" tile.
-  - *Verdict*: stat tiles for score, confidence and divergence.
-- **Missing data:** shown as muted text, never as a zero-length bar.
-- **Readability:**
-  - Bought/inflow and sold/outflow use a blue/red pair checked for colour-blind readers in light and dark mode.
-  - Values are always written as text.
-  - Every bar or marker shows a tooltip on hover or keyboard focus.
-  - Each chart has a hidden data table for screen readers.
-  - Light and dark mode follow your system setting.
+1. **Top bar:** a token monogram, the name ("ChainLink") with symbol and chain chips, the price with its change pill,
+   and an **EN | عربي** switch.
+2. **Hero line:** one short sentence (e.g. "Smart money is selling into market greed."), the verdict badge, an
+   **AGREE ✓ / DISAGREE ⇄** stamp and confidence pips (●●○).
+3. **The face-off:**
+   - *Smart money · on-chain (Nansen)* on one side: the direction (Buying ↑ / Selling ↓ / Flat), a 100% split bar
+     of smart USD bought vs sold, and a net-flow bar growing from a centred zero.
+   - *Market mood · whole market (Fear & Greed)* on the other side: a 0–100 gauge tagged "whole market, not <token>",
+     plus a small *Token social* gauge when LunarCrush is configured.
+   - A **VS** node sits between them with each side's direction arrow. The connector glows when they disagree.
+4. **Details** (collapsed): address, chain, lookback, time, wallets, avg flow, top-PnL traders, flow basis, scores,
+   confidence reasons, market cap / liquidity / holders, the LunarCrush note, sources and the disclaimer.
+5. **Footer:** "Zalat Smart Money Insight. Data: Nansen, alternative.me. Not financial advice." (and in Arabic).
+
+**Missing data is hidden, not boxed:**
+- No buy/sell data: no split bar.
+- No flow: no net-flow bar.
+- No Fear & Greed: no mood card, and the VS node says "no crowd signal".
+- No price change: no change pill.
+
+**Languages:** the file contains the full English and Arabic card. Switch with the toggle, the **L** key, or by
+opening the file with `#ar` / `#en` at the end of the URL. The Arabic card is mirrored right-to-left, with numbers,
+symbols and names kept in reading order. `--card-lang ar` makes the card open in Arabic
+(`python -m zalat.card --from-json … --lang ar` does the same).
+
+**Look and accessibility:**
+- **Theme:** dark by default, with a soft glow tinted by the verdict (coral bearish, teal bullish, slate neutral). A
+  light theme follows your system setting.
+- **Colours:** buy/inflow and sell/outflow use a blue/coral pair checked for colour-blind readers in both themes. The
+  gauge uses its own neutral-to-amber track.
+- **Charts:** every bar has a tooltip and every chart a hidden data table for screen readers.
+- **Animation:** bars grow, the needle sweeps, numbers count up and the stamp pops in. All of this is switched off
+  when your system asks for reduced motion.
 
 **To open or record it:** double-click the file, or run `open cards/<file>.html` (macOS), `start cards\<file>.html`
 (Windows) or `xdg-open cards/<file>.html` (Linux).
-- For a screen recording, set the browser window to **1280×720** at 100% zoom. The header, verdict pill,
-  disagreement banner and section 1 charts fit on the first screen, and you can scroll to sections 2 and 3.
-- For a phone-sized view, use the browser's device toolbar (e.g. 390px wide).
+- For a screen recording, use a **1280×720** window at 100% zoom. The whole card fits with no scrolling. Wait about
+  1.5 s for the animations, then press **L** to show the Arabic version.
+- Phones get a stacked layout that scrolls vertically.
 
 ## Sample output
 
