@@ -90,6 +90,10 @@ class SmartMoneySignal:
     unavailable_reasons: list[tuple[str, dict]] = field(default_factory=list)
     #: True if any available part was damped for having < MIN_GROSS_USD volume.
     small_volume: bool = False
+    #: True if flow_score used an ESTIMATED gross (avg flow x wallets, REST).
+    gross_estimated: bool = False
+    #: Top-PnL traders' flow (REST): secondary context, not part of the score.
+    top_pnl: SmFlow | None = None
 
 
 @dataclass
@@ -102,6 +106,10 @@ class PriceContext:
     #: Where change_pct came from: "nansen_token_info" | "lunarcrush" | None.
     source: str | None = None
     direction: str | None = None   # Rising | Falling | Flat | None
+    # Market context (Nansen token-information), display only.
+    market_cap_usd: float | None = None
+    liquidity_usd: float | None = None
+    holders: float | None = None
 
 
 @dataclass
@@ -155,28 +163,34 @@ def build_price_context(
     token: TokenRef,
     info: tuple[float | None, float | None] | None,
     social: SocialSignal | None,
+    ohlcv: tuple[float | None, float | None] | None = None,
+    market: dict[str, float] | None = None,
 ) -> PriceContext | None:
     """Merge price sources.
 
-    Price: Nansen search > Nansen token_info > LunarCrush. Change %: Nansen
-    token_info > LunarCrush (LunarCrush only when its signal is trusted, i.e.
-    status "ok"). Returns None when nothing is known.
+    Price: Nansen search > Nansen token_info > Nansen OHLCV last close >
+    LunarCrush. 24h change: Nansen OHLCV (last close vs previous close) >
+    Nansen token_info > LunarCrush (LunarCrush only when its status is "ok").
+    ``market`` adds market cap / liquidity / holders for display.
+    Returns None when nothing is known.
     """
     info_price, info_change = info if info else (None, None)
+    ohlcv_close, ohlcv_change = ohlcv if ohlcv else (None, None)
     lc_ok = social is not None and social.available
-    price = token.price_usd
-    if price is None:
-        price = info_price
-    if price is None and lc_ok:
-        price = social.price_usd
+    price = next((p for p in (token.price_usd, info_price, ohlcv_close,
+                              social.price_usd if lc_ok else None) if p is not None), None)
     change, source = None, None
-    if info_change is not None:
+    if ohlcv_change is not None:
+        change, source = ohlcv_change, "nansen_ohlcv"
+    elif info_change is not None:
         change, source = info_change, "nansen_token_info"
     elif lc_ok and social.pct_change_24h is not None:
         change, source = social.pct_change_24h, "lunarcrush"
-    if price is None and change is None:
+    m = market or {}
+    if price is None and change is None and not m:
         return None
-    return PriceContext(price, change, "24h", source, price_direction(change))
+    return PriceContext(price, change, "24h", source, price_direction(change),
+                        m.get("market_cap_usd"), m.get("liquidity_usd"), m.get("holders"))
 
 
 def sm_label(score: float | None) -> str:
@@ -215,6 +229,7 @@ def build_sm_signal(
     sell: BuySellSide | None,
     flow_scale: float = DEFAULT_FLOW_SCALE,
     min_gross_usd: float | None = None,
+    top_pnl: SmFlow | None = None,
 ) -> SmartMoneySignal:
     """Combine the flow and buy/sell parts into one smart-money signal.
 
@@ -225,6 +240,7 @@ def build_sm_signal(
     min_gross = MIN_GROSS_USD if min_gross_usd is None else min_gross_usd
     reasons: list[tuple[str, dict]] = []
     small = False
+    estimated = False
 
     flow_score = None
     if flow is not None and flow.net_usd is not None:
@@ -233,6 +249,13 @@ def build_sm_signal(
             # Clamp: a reported net can disagree slightly with in/out.
             ratio = max(-1.0, min(1.0, flow.net_usd / max(gross, 1.0)))
             flow_score = ratio * _size_factor(gross, min_gross)
+        elif flow.estimated_gross_usd is not None:
+            # Nansen REST gives net flow, average flow per wallet and the
+            # wallet count, but no in/out split: estimate gross = avg x count.
+            gross = flow.estimated_gross_usd
+            ratio = max(-1.0, min(1.0, flow.net_usd / gross))
+            flow_score = ratio * _size_factor(gross, min_gross)
+            estimated = True
         else:
             # Only the net is known. tanh(net / flow_scale) already shrinks
             # small nets toward 0; |net| is the best lower bound on gross.
@@ -269,7 +292,8 @@ def build_sm_signal(
         wallets = max(buy.wallets, sell.wallets)
 
     return SmartMoneySignal(flow, buy, sell, flow_score, bs_score, score,
-                            sm_label(score), sm_strength(score), wallets, reasons, small)
+                            sm_label(score), sm_strength(score), wallets, reasons, small,
+                            estimated, top_pnl)
 
 
 def _primary(market: CrowdSignal, social: SocialSignal | None

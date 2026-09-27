@@ -296,7 +296,8 @@ def test_json_sprint2_fields():
     assert data["market_mood"]["scope"] == \
         "market-wide (whole crypto market, BTC-centric), not token-specific"
     assert data["price"] == {"price_usd": 4e-06, "change_pct": -5.2, "window": "24h",
-                             "source": "lunarcrush", "direction": "Falling"}
+                             "source": "lunarcrush", "direction": "Falling",
+                             "market_cap_usd": None, "liquidity_usd": None, "holders": None}
     assert data["headline"]["en"] == "Smart money is buying while this token's social crowd is bearish"
     assert "crowd" not in data and "price_usd" in data["token"]
 
@@ -328,3 +329,25 @@ def test_arabic_short_names_depend_on_crowd_source():
             assert "الجمهور" not in kind_text(kind, "ar", source)[0]
     out = render_text(_v2(fng=20), "ar")
     assert "[صعود عكس مزاج السوق]" in out
+
+
+# ======================= Sprint 3: REST lines ===========================================
+def test_rest_flow_lines_both_languages():
+    sm = build_sm_signal(SmFlow(-1524.38, None, None, 12, {}, 6842.44), BuySellSide(2694, 6),
+                         BuySellSide(145673, 6), top_pnl=SmFlow(-6.6e6, None, None, 78, {}, 1.5e6))
+    price = PriceContext(4.38e-06, -0.1, "24h", "nansen_ohlcv", "Flat", 1.838e9, 1.717e7, 409302)
+    v = decide(TOK, "1d", sm, signal_from_value(70), None, price)
+    en, ar = render_text(v, "en"), render_text(v, "ar")
+    assert "  - Net flow: -$1.5k (12 wallets, avg $6.8k per wallet, estimated gross $82.1k)" in en
+    assert "  - Top PnL traders net flow (context, not scored): -$6.6M (78 wallets)" in en
+    assert "Price: $0.00000438 (-0.1% over 24h, source Nansen OHLCV)" in en
+    assert "Market context: market cap $1.8B, liquidity $17.2M, holders 409,302" in en
+    assert "إجمالي تقديري $82.1k" in ar and "12 محفظة" in ar
+    assert "أعلى المتداولين ربحاً" in ar and "عدد الحاملين 409,302" in ar
+    assert "in n/a" not in en
+
+
+def test_net_only_flow_line():
+    sm = build_sm_signal(SmFlow(2e5, None, None, 5, {}, None), None, None)
+    v = decide(TOK, "1d", sm, signal_from_value(70))
+    assert "  - Net flow: +$200.0k (5 wallets)" in render_text(v, "en")

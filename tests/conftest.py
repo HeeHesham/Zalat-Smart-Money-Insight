@@ -68,7 +68,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests never see the developer's real key or overrides."""
     for var in ("NANSEN_API_KEY", "NANSEN_MCP_URL", "NANSEN_API_KEY_HEADER",
                 "ZALAT_TIMEOUT", "ZALAT_FNG_URL", "ZALAT_MIN_GROSS_USD",
-                "LUNARCRUSH_API_KEY", "LUNARCRUSH_URL"):
+                "LUNARCRUSH_API_KEY", "LUNARCRUSH_URL", "ZALAT_NANSEN_BACKEND",
+                "NANSEN_API_URL"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -136,6 +137,28 @@ def happy_responses() -> dict[str, Responder]:
         "token_recent_flows_summary": ok("token_recent_flows_summary", fixture_text("flows_md.txt")),
         "token_who_bought_sold": wbs,
         "token_info": ok("token_info", fixture_text("token_info_md.txt")),
+        "token_ohlcv": ok("token_ohlcv", fixture_text("real_ohlcv.json")),
+    }
+
+
+def real_responses() -> dict[str, Responder]:
+    """Nansen REST responses captured live (tests/fixtures/real_*.json)."""
+
+    def wbs(args: dict) -> ToolResult:
+        side = args["request"]["buy_or_sell"].lower()
+        return ok("token_who_bought_sold", fixture_text(f"real_wbs_{side}.json"))
+
+    def flows(args: dict) -> ToolResult:
+        tf = args["request"]["lookbackPeriod"]
+        name = "real_flow_7d.json" if tf == "7d" else "real_flow_1d.json"
+        return ok("token_recent_flows_summary", fixture_text(name))
+
+    return {
+        "general_search": ok("general_search", fixture_text("real_search.json")),
+        "token_recent_flows_summary": flows,
+        "token_who_bought_sold": wbs,
+        "token_info": ok("token_info", fixture_text("real_tokinfo.json")),
+        "token_ohlcv": ok("token_ohlcv", fixture_text("real_ohlcv.json")),
     }
 
 

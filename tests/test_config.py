@@ -35,11 +35,38 @@ def test_overrides(monkeypatch):
 
 
 @pytest.mark.parametrize("value", [None, "", "   ", "your_key_here", "'your_key_here'"])
-def test_missing_or_placeholder_key(tmp_path, monkeypatch, value):
+def test_missing_or_placeholder_key_mcp_backend(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("ZALAT_NANSEN_BACKEND", "mcp")
     if value is not None:
         monkeypatch.setenv("NANSEN_API_KEY", value)
     with pytest.raises(ConfigError, match="NANSEN_API_KEY is not set"):
         load_settings(tmp_path / "does-not-exist.env")
+
+
+@pytest.mark.parametrize("value", [None, "", "your_key_here"])
+def test_missing_key_ok_for_rest_backend(tmp_path, monkeypatch, value):
+    if value is not None:
+        monkeypatch.setenv("NANSEN_API_KEY", value)
+    s = load_settings(tmp_path / "does-not-exist.env")
+    assert s.backend == "rest" and s.api_key == "" and s.secrets() == []
+    assert "api_key=''" in repr(s)
+
+
+def test_backend_and_rest_settings(monkeypatch):
+    from zalat.config import DEFAULT_REST_URL
+
+    s = load_settings(None)
+    assert (s.backend, s.rest_url, s.rest_key_header, s.key_header) == \
+        ("rest", DEFAULT_REST_URL, "apiKey", "NANSEN-API-KEY")
+    monkeypatch.setenv("NANSEN_API_URL", "https://nansen.example/api/v1/")
+    monkeypatch.setenv("NANSEN_API_KEY_HEADER", "X-Key")
+    monkeypatch.setenv("ZALAT_NANSEN_BACKEND", "REST")
+    s = load_settings(None)
+    assert (s.rest_url, s.rest_key_header, s.key_header) == \
+        ("https://nansen.example/api/v1", "X-Key", "X-Key")
+    monkeypatch.setenv("ZALAT_NANSEN_BACKEND", "graphql")
+    with pytest.raises(ConfigError, match="ZALAT_NANSEN_BACKEND"):
+        load_settings(None)
 
 
 def test_bad_timeout(monkeypatch):

@@ -4,7 +4,15 @@ import asyncio
 import importlib.util
 import json
 
-from tests.conftest import FAKE_KEY, ROOT, FakeNansenClient, happy_responses, ok, tool_error
+from tests.conftest import (
+    FAKE_KEY,
+    ROOT,
+    FakeNansenClient,
+    fixture_text,
+    happy_responses,
+    ok,
+    tool_error,
+)
 from zalat.config import Settings
 from zalat.errors import NansenAuthError, NansenNetworkError
 from zalat.nansen_mcp import ToolResult
@@ -42,7 +50,7 @@ def test_reaches_100_calls_and_writes_report(tmp_path, capsys):
     assert rep["total_calls"] == 100 and rep["status"] == "completed"
     assert rep["successes"] + rep["failures"] == 100
     assert set(rep["per_tool"]) == {"general_search", "token_recent_flows_summary",
-                                    "token_who_bought_sold", "token_info"}
+                                    "token_who_bought_sold", "token_ohlcv", "token_info"}
     for t in rep["per_tool"].values():
         assert {"calls", "ok", "fail", "avg_ms", "p95_ms"} <= set(t)
     # UNI is not in the PEPE search sample -> its searches don't resolve.
@@ -143,9 +151,70 @@ def test_token_info_in_rotation_and_lunarcrush_never_called(tmp_path, monkeypatc
                                    client_factory=fake.factory, settings=s, sleep=_nosleep))
     assert code == 0 and len(fake.calls) == 100
     assert {c[0] for c in fake.calls} == {"general_search", "token_recent_flows_summary",
-                                         "token_who_bought_sold", "token_info"}
+                                         "token_who_bought_sold", "token_ohlcv", "token_info"}
     rep = json.loads((tmp_path / "stress_report.json").read_text(encoding="utf-8"))
     assert rep["total_calls"] == 100 and rep["per_tool"]["token_info"]["calls"] > 0
     assert rep["parse_stats"]["token_info_parsed"] > 0
     assert "lc-SECRET-should-not-leak" not in _files_text(tmp_path)
     assert not hasattr(stress, "fetch_social")
+
+
+# ======================= Sprint 3: REST stress report =======================================
+def test_stress_report_lists_request_ids_and_credits(tmp_path, capsys):
+    from tests.conftest import real_responses
+
+    counter = {"n": 0, "info": 0}
+    base = real_responses()
+
+    def wrap(tool):
+        def respond(args):
+            counter["n"] += 1
+            r = base[tool](args) if callable(base[tool]) else base[tool]
+            if tool == "token_info":
+                counter["info"] += 1
+            if tool == "token_info" and counter["info"] % 2:
+                return ToolResult(tool, False, '{"request_id":"req-f"}', True, "tool_error",
+                                  reason="INTERNAL", http_status=422, request_id=f"req-f{counter['n']}")
+            return ToolResult(tool, True, r.text, http_status=200,
+                              request_id=f"req-{counter['n']}", credits_cost=1.0,
+                              credits_remaining=28000.0 - counter["n"], latency_ms=3.0)
+        return respond
+
+    fake = FakeNansenClient({t: wrap(t) for t in base})
+    code = _run(["--tokens", "PEPE,UNI", "--out", str(tmp_path)], fake)
+    rep = json.loads((tmp_path / "stress_report.json").read_text(encoding="utf-8"))
+    assert code == 0 and rep["total_calls"] == 100 and rep["backend"] == "rest"
+    assert set(rep["per_tool"]) == {"general_search", "token_recent_flows_summary",
+                                    "token_who_bought_sold", "token_ohlcv", "token_info"}
+    assert all(c["request_id"] and "http_status" in c for c in rep["calls"])
+    assert rep["failed_calls"] and all(f["request_id"].startswith("req-f") for f in rep["failed_calls"])
+    assert rep["credits_used"] == rep["successes"] and rep["credits_remaining"] < 28000
+    assert rep["parse_stats"]["wbs_parsed"] > 0 and rep["parse_stats"]["ohlcv_parsed"] > 0
+    assert rep["parse_stats"]["flows_parsed"] > 0 and rep["parse_stats"]["token_info_parsed"] > 0
+    out = capsys.readouterr().out
+    assert "credits     : used" in out and "request_id=req-f" in out
+    # rotation: search, flows 1d + 7d, BUY, SELL, ohlcv, info
+    variants = [(c["tool"], c["variant"]) for c in rep["calls"][:7]]
+    assert variants == [("general_search", ""), ("token_recent_flows_summary", "1d"),
+                        ("token_recent_flows_summary", "7d"), ("token_who_bought_sold", "BUY"),
+                        ("token_who_bought_sold", "SELL"), ("token_ohlcv", ""), ("token_info", "")]
+
+
+def test_stress_retries_rate_limited(tmp_path):
+    n = {"i": 0}
+
+    def search(args):
+        n["i"] += 1
+        if n["i"] == 1:
+            return ToolResult("general_search", False, "", True, "rate_limited", reason="http_429",
+                              http_status=429, request_id="req-429")
+        return ok("general_search", fixture_text("real_search.json"))
+
+    from tests.conftest import real_responses
+    responses = real_responses()
+    responses["general_search"] = search
+    fake = FakeNansenClient(responses)
+    _run(["--tokens", "PEPE", "--min-calls", "10", "--out", str(tmp_path)], fake)
+    rep = json.loads((tmp_path / "stress_report.json").read_text(encoding="utf-8"))
+    assert rep["calls"][0]["reason"] == "rate_limited" and rep["calls"][1]["attempt"] == 2
+    assert rep["failed_calls"][0]["request_id"] == "req-429"

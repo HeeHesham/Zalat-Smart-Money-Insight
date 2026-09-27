@@ -238,3 +238,90 @@ def test_extract_price_info_markdown_with_several_windows():
     md = ("| Metric | Value |\n|--|--|\n| Price USD | $0.85 |\n| Price Change 1h | +0.4% |\n"
           "| Price Change 24h | -7.5% |\n| Price Change 7d | +12% |")
     assert extract_price_info(md) == (pytest.approx(0.85), pytest.approx(-7.5))
+
+
+# ======================= Sprint 3: REAL Nansen REST shapes ==================================
+from zalat.parsing import (  # noqa: E402
+    extract_buy_sell,
+    extract_ohlcv_change,
+    extract_token_market,
+    extract_top_pnl_flow,
+)
+
+
+def test_real_flow_smart_trader_cohort():
+    f = extract_sm_flow(fixture_text("real_flow_1d.json"))
+    assert f.net_usd == pytest.approx(-1524.3839674757212)
+    assert f.inflow_usd is None and f.outflow_usd is None
+    assert f.wallets == 12 and f.avg_usd == pytest.approx(6842.438769389481)
+    assert f.estimated_gross_usd == pytest.approx(6842.438769389481 * 12)
+    assert set(f.source_row) == {"smart_trader_net_flow_usd", "smart_trader_avg_flow_usd",
+                                 "smart_trader_wallet_count"}
+
+
+def test_real_flow_top_pnl_cohort():
+    tp = extract_top_pnl_flow(fixture_text("real_flow_7d.json"))
+    assert tp.net_usd == pytest.approx(-6616800.821203695) and tp.wallets == 78
+
+
+def test_estimated_gross_needs_positive_avg_and_wallets():
+    assert extract_sm_flow(json.dumps({"data": [{"smart_trader_net_flow_usd": 5,
+                                                 "smart_trader_avg_flow_usd": None,
+                                                 "smart_trader_wallet_count": 3}]})
+                           ).estimated_gross_usd is None
+    f = extract_sm_flow(json.dumps({"data": [{"smart_trader_net_flow_usd": 5,
+                                              "smart_trader_avg_flow_usd": 10,
+                                              "smart_trader_wallet_count": 0}]}))
+    assert f.estimated_gross_usd is None and f.wallets == 0
+
+
+def test_real_who_bought_sold_union_by_address():
+    buy, sell = extract_buy_sell(fixture_text("real_wbs_buy.json"), fixture_text("real_wbs_sell.json"))
+    assert buy.volume_usd == pytest.approx(1990.7048619313407 + 503.64736614390984 + 199.91506033433208)
+    assert sell.volume_usd == pytest.approx(602.3713796899275 + 93145.3799213329
+                                            + 32938.548540190866 + 18986.64064931614)
+    assert buy.wallets == sell.wallets == 6
+
+
+def test_union_counts_overlapping_wallet_once():
+    row = {"address": "0xAA", "bought_volume_usd": 100, "sold_volume_usd": 40,
+           "bought_token_volume": 9e9, "sold_token_volume": 1e9}
+    other = {"address": "0xbb", "bought_volume_usd": 0, "sold_volume_usd": 60}
+    b = json.dumps({"data": [row]})
+    s = json.dumps({"data": [dict(row, address="0xaa"), other]})
+    buy, sell = extract_buy_sell(b, s)
+    assert (buy.volume_usd, sell.volume_usd, buy.wallets) == (100, 100, 2)
+
+
+def test_union_empty_lists_and_fallback_and_missing_side():
+    empty = json.dumps({"data": [], "pagination": {"is_last_page": True}})
+    buy, sell = extract_buy_sell(empty, empty)
+    assert (buy.volume_usd, buy.wallets, sell.volume_usd) == (0, 0, 0)
+    one = extract_buy_sell(fixture_text("real_wbs_buy.json"), empty)
+    assert one[0].wallets == 3 and one[1].volume_usd == pytest.approx(602.3713796899275)
+    md = extract_buy_sell(fixture_text("wbs_buy_md.txt"), fixture_text("wbs_sell_md.txt"))
+    assert md[0].volume_usd == pytest.approx(800_000) and md[1].volume_usd == pytest.approx(200_000)
+    assert extract_buy_sell(None, fixture_text("real_wbs_sell.json")) == (None, None)
+
+
+def test_real_ohlcv_change():
+    close, change = extract_ohlcv_change(fixture_text("real_ohlcv.json"))
+    assert close == pytest.approx(4.36928211882272e-06)
+    assert change == pytest.approx((4.36928211882272e-06 / 4.37390425007273e-06 - 1) * 100)
+
+
+def test_ohlcv_sorts_and_edge_cases():
+    rows = [{"interval_start": "2026-09-27T00:00:00Z", "close": 110},
+            {"interval_start": "2026-09-26T00:00:00Z", "close": 100}]
+    assert extract_ohlcv_change(json.dumps({"data": rows})) == (110, pytest.approx(10.0))
+    assert extract_ohlcv_change(json.dumps({"data": rows[:1]})) == (110, None)
+    assert extract_ohlcv_change("garbage") == (None, None)
+    assert extract_ohlcv_change(json.dumps({"data": []})) == (None, None)
+
+
+def test_real_token_information_market_context():
+    assert extract_token_market(fixture_text("real_tokinfo.json")) == {
+        "market_cap_usd": pytest.approx(1838113294.5675302),
+        "liquidity_usd": pytest.approx(17171733.51866558), "holders": 409302}
+    assert extract_price_info(fixture_text("real_tokinfo.json")) == (None, None)  # no price there
+    assert extract_token_market("nope") is None and extract_token_market('{"data": {}}') is None

@@ -33,7 +33,7 @@ class NansenAuthError(ZalatError):
 
 
 class NansenNetworkError(ZalatError):
-    """Nansen MCP could not be reached (DNS, connect, timeout, 5xx...)."""
+    """Nansen (REST or MCP) could not be reached (DNS, connect, timeout, 5xx...)."""
 
 
 class NansenProtocolError(ZalatError):
@@ -78,12 +78,12 @@ def classify_exception(exc: BaseException, secrets: Iterable[str] = ()) -> Zalat
             code = leaf.response.status_code
             if code in (401, 403):
                 return NansenAuthError(auth_message(code))
-            return NansenNetworkError(f"Nansen MCP returned HTTP {code}")
+            return NansenNetworkError(f"Nansen returned HTTP {code}")
         if isinstance(leaf, (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError)):
-            return NansenNetworkError("timeout while talking to Nansen MCP")
+            return NansenNetworkError("timeout while talking to Nansen")
         if isinstance(leaf, (httpx.TransportError, OSError)):
             return NansenNetworkError(
-                _redact(f"cannot reach Nansen MCP: {type(leaf).__name__}: {leaf}", secrets)
+                _redact(f"cannot reach Nansen: {type(leaf).__name__}: {leaf}", secrets)
             )
         if isinstance(leaf, McpError):
             msg = _redact(str(leaf), secrets)

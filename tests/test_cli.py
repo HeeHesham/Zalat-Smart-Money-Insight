@@ -46,7 +46,7 @@ def test_happy_path_both_languages(key, capsys):
     assert DISCLAIMER_EN in out and DISCLAIMER_AR in out
     assert [c[0] for c in fake.calls] == ["general_search", "token_recent_flows_summary",
                                           "token_who_bought_sold", "token_who_bought_sold",
-                                          "token_info"]
+                                          "token_ohlcv", "token_info"]
     assert FAKE_KEY not in out + err
 
 
@@ -116,10 +116,17 @@ def test_raw_is_redacted(key, capsys):
     assert FAKE_KEY not in out + err
 
 
-def test_missing_key_exit_2(capsys):
+def test_missing_key_exit_2_for_mcp_backend(capsys, monkeypatch):
+    monkeypatch.setenv("ZALAT_NANSEN_BACKEND", "mcp")
     code, fake = cli(["PEPE"])
     assert code == 2 and "NANSEN_API_KEY is not set" in capsys.readouterr().err
     assert fake.calls == []
+
+
+def test_missing_key_is_fine_for_rest_backend(capsys):
+    # REST (default): no key -> no key header; a proxy may inject the credential.
+    code, fake = cli(["PEPE"])
+    assert code == 0 and fake.settings.api_key == "" and fake.settings.backend == "rest"
 
 
 def test_bad_args_exit_2(key, capsys):
@@ -145,8 +152,17 @@ def test_search_auth_tool_error_exit_4(key, capsys):
     code, _ = cli(["PEPE"], FakeNansenClient({"general_search": res}))
     err = capsys.readouterr().err
     assert code == 4
-    assert "Nansen rejected the API key. Check NANSEN_API_KEY / NANSEN_API_KEY_HEADER." in err
+    assert "Nansen rejected the request: set NANSEN_API_KEY in .env" in err  # REST default
     assert "Token search failed" not in err and "auth: auth" not in err
+
+
+def test_search_auth_tool_error_exit_4_mcp_message(key, capsys, monkeypatch):
+    monkeypatch.setenv("ZALAT_NANSEN_BACKEND", "mcp")
+    res = ToolResult("general_search", False, "Unauthorized", True, "auth", reason="auth")
+    code, _ = cli(["PEPE"], FakeNansenClient({"general_search": res}))
+    assert code == 4
+    assert "Nansen rejected the API key. Check NANSEN_API_KEY / NANSEN_API_KEY_HEADER." in \
+        capsys.readouterr().err
 
 
 def test_address_without_symbol_uses_short_address(key, capsys):
@@ -380,6 +396,7 @@ def test_fng_and_lc_fetched_concurrently(key, capsys):
 def test_token_info_failure_is_harmless(key, capsys):
     responses = happy_responses()
     responses["token_info"] = tool_error("token_info")
+    responses["token_ohlcv"] = tool_error("token_ohlcv")
     code, _ = cli2(["PEPE", "--json"], FakeNansenClient(responses))
     data = json.loads(capsys.readouterr().out)
     assert code == 0
@@ -387,11 +404,19 @@ def test_token_info_failure_is_harmless(key, capsys):
     assert data["price"]["price_usd"] == 4e-06 and data["price"]["change_pct"] is None
 
 
-def test_price_context_from_token_info(key, capsys):
+def test_price_change_prefers_ohlcv(key, capsys):
     code, _ = cli2(["PEPE", "--lang", "en"])
     out = capsys.readouterr().out
-    assert "Price: $0.000004 (-5.2% over 24h, source Nansen token_info)" in out
+    # real OHLCV: last close 4.36928e-06 vs previous 4.37390e-06 -> -0.1%
+    assert "Price: $0.000004 (-0.1% over 24h, source Nansen OHLCV)" in out
     assert "e-06" not in out
+
+
+def test_price_context_from_token_info_when_ohlcv_fails(key, capsys):
+    responses = happy_responses()
+    responses["token_ohlcv"] = tool_error("token_ohlcv")
+    cli2(["PEPE", "--lang", "en"], FakeNansenClient(responses))
+    assert "Price: $0.000004 (-5.2% over 24h, source Nansen token_info)" in capsys.readouterr().out
 
 
 def test_early_exit_cancels_sentiment_tasks(key, capsys):
@@ -417,3 +442,87 @@ def test_raw_lunarcrush_dump_without_key_says_no_request(key, capsys):
     cli2(["PEPE", "--raw"])
     err = capsys.readouterr().err
     assert "=== lunarcrush status=not_configured" in err and "no request made" in err
+
+
+# ======================= Sprint 3: REST backend end to end ==================================
+from tests.conftest import real_responses  # noqa: E402
+
+
+def test_real_rest_payloads_end_to_end(capsys):
+    # No NANSEN_API_KEY at all: REST default works (proxy-injected credential).
+    fake = FakeNansenClient(real_responses())
+    code = main(["PEPE", "--lang", "en"], client_factory=fake.factory, fng_fetcher=fng_const(70),
+                env_file=None)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Token: PEPE (Pepe) on ethereum" in out
+    assert "Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933" in out
+    assert "Net flow: -$1.5k (12 wallets, avg $6.8k per wallet, estimated gross $82.1k)" in out
+    assert "Smart buyers vs sellers: $2.7k bought / $145.7k sold" in out
+    assert "Top PnL traders net flow (context, not scored): -$165.3k (17 wallets)" in out
+    assert "source Nansen OHLCV" in out and "holders 409,302" in out
+    assert "Market-wide mood (whole crypto market" in out and "(70/100)" in out
+    wbs_calls = [a for t, a in fake.calls if t == "token_who_bought_sold"]
+    assert [a["request"]["buy_or_sell"] for a in wbs_calls] == ["BUY", "SELL"]
+
+
+def test_real_rest_payloads_json(capsys):
+    fake = FakeNansenClient(real_responses())
+    main(["PEPE", "--json", "--period", "7d"], client_factory=fake.factory,
+         fng_fetcher=fng_const(70), env_file=None)
+    data = json.loads(capsys.readouterr().out)
+    assert data["sm"]["gross_estimated"] is True and data["sm"]["wallets"] == 53
+    assert data["sm"]["top_pnl"]["wallets"] == 78
+    assert data["sm"]["buy"]["wallets"] == 6
+    assert data["price"]["source"] == "nansen_ohlcv" and data["price"]["holders"] == 409302
+
+
+def test_raw_and_verbose_show_request_ids(capsys):
+    responses = real_responses()
+    search = responses["general_search"]
+    search.request_id, search.http_status, search.credits_remaining = "req-xyz", 200, 28090.0
+    fail = ToolResult("token_recent_flows_summary", False, '{"error":"x","request_id":"req-bad"}',
+                      True, "tool_error", reason="INVALID", http_status=422, request_id="req-bad")
+    responses["token_recent_flows_summary"] = fail
+    fake = FakeNansenClient(responses)
+    code = main(["PEPE", "--raw", "-v"], client_factory=fake.factory, fng_fetcher=fng_const(70),
+                env_file=None)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert "=== general_search ok=True http=200 request_id=req-xyz credits_remaining=28090" in err
+    assert ("=== token_recent_flows_summary ok=False error=tool_error reason=INVALID "
+            "http=422 request_id=req-bad") in err
+    assert "general_search ok=True http=200 request_id=req-xyz" in err  # -v log line too
+
+
+def test_rest_auth_error_exit_4_message(capsys):
+    def boom(args):
+        raise NansenAuthError("Nansen rejected the request: set NANSEN_API_KEY in .env (HTTP 401)")
+
+    fake = FakeNansenClient({"general_search": boom})
+    code = main(["PEPE"], client_factory=fake.factory, fng_fetcher=fng_const(70), env_file=None)
+    assert code == 4
+    assert "Nansen rejected the request: set NANSEN_API_KEY in .env" in capsys.readouterr().err
+
+
+def test_rest_search_network_failure_exit_5_with_request_id(capsys):
+    res = ToolResult("general_search", False, "HTTP 503", True, "network", reason="http_503",
+                     http_status=503, request_id="req-503")
+    fake = FakeNansenClient({"general_search": res})
+    code = main(["PEPE"], client_factory=fake.factory, fng_fetcher=fng_const(70), env_file=None)
+    err = capsys.readouterr().err
+    assert code == 5 and "request_id req-503" in err
+
+
+def test_default_client_factory_is_rest(capsys, monkeypatch):
+    import zalat.nansen_rest as rest_mod
+
+    made = []
+
+    def fake_rest(settings):
+        made.append(settings.backend)
+        return FakeNansenClient(real_responses())
+
+    monkeypatch.setattr(rest_mod, "NansenRESTClient", fake_rest)
+    code = main(["PEPE"], fng_fetcher=fng_const(70), env_file=None)  # default client factory
+    assert code == 0 and made == ["rest"]

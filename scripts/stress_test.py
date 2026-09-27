@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Stress test: make at least N real Nansen MCP tool calls and report on them.
+"""Stress test: make at least N real Nansen API calls and report on them.
 
-Usage (from the repository root, with your key in .env)::
+Usage (from the repository root)::
 
-    python scripts/stress_test.py
+    python scripts/stress_test.py                      # REST backend (default)
     python scripts/stress_test.py --tokens PEPE,UNI,LINK --chain ethereum --min-calls 100
+    python scripts/stress_test.py --backend mcp        # Nansen MCP (needs NANSEN_API_KEY)
 
-For each token, in rounds, it calls ``general_search`` then
-``token_recent_flows_summary`` for several lookback periods and
-``token_who_bought_sold`` for BUY and SELL, then ``token_info``, until at
-least ``--min-calls`` calls were made. Everything happens in ONE MCP session
+For each token, in rounds, it calls ``general_search``, then
+``token_recent_flows_summary`` for each ``--periods`` value (default 1d, 7d),
+``token_who_bought_sold`` for BUY and SELL, ``token_ohlcv`` and ``token_info``,
+until at least ``--min-calls`` calls were made. One client/session is used,
 with a small delay between calls. Failures never stop the run (except a
-rejected API key). Only Nansen MCP calls are made and counted: this script
-never calls LunarCrush or the Fear & Greed API.
+rejected API key). Only Nansen calls are made and counted: this script never
+calls LunarCrush or the Fear & Greed API.
 
 Outputs:
-    reports/stress_report.json   totals, per-tool success/failure/latency, error reasons
+    reports/stress_report.json   totals, per-tool success/failure/latency, error
+                                 reasons, credits used/remaining, EVERY call (tool,
+                                 token, ok, http status, request_id, latency) and a
+                                 ``failed_calls`` list with request ids
     reports/raw/<tool>_<token>[_<variant>].txt   raw text of the latest call of each kind
 
 API keys are never written to any file; the script double-checks that.
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import json
 import math
 import sys
@@ -41,19 +46,26 @@ from zalat.config import Settings, load_settings, redact  # noqa: E402
 from zalat.errors import ConfigError, NansenAuthError, NansenNetworkError  # noqa: E402
 from zalat.nansen_mcp import (  # noqa: E402
     LOOKBACK,
-    NansenMCPClient,
     ToolResult,
     TokenRef,
     flows_args,
     parse_search_candidates,
     search_args,
     token_info_args,
+    token_ohlcv_args,
     who_bought_sold_args,
 )
-from zalat.parsing import extract_price_info, extract_side_volume, extract_sm_flow  # noqa: E402
+from zalat.nansen_rest import make_client  # noqa: E402
+from zalat.parsing import (  # noqa: E402
+    extract_buy_sell,
+    extract_ohlcv_change,
+    extract_price_info,
+    extract_sm_flow,
+    extract_token_market,
+)
 
 DEFAULT_TOKENS = "PEPE,UNI,LINK,AAVE,SHIB,LDO,MKR,ARB,ONDO,ENA"
-RETRYABLE = {"network", "timeout"}
+RETRYABLE = {"network", "timeout", "rate_limited"}
 MAX_RETRIES = 3
 
 
@@ -100,6 +112,7 @@ class StressRun:
     def _write_raw(self, res: ToolResult, token: str, variant: str) -> None:
         name = _safe(f"{res.tool}_{token}" + (f"_{variant}" if variant else "")) + ".txt"
         header = (f"# tool={res.tool} token={token} variant={variant or '-'} ok={res.ok} "
+                  f"http={res.http_status} request_id={res.request_id} "
                   f"error_kind={res.error_kind} reason={res.reason} latency_ms={res.latency_ms:.0f}\n")
         (self.raw_dir / name).write_text(redact(header + res.text, self.settings.secrets()),
                                          encoding="utf-8")
@@ -115,12 +128,16 @@ class StressRun:
             start = time.perf_counter()
             res = await self.client.call(tool, args)  # may raise NansenAuthError
             latency = res.latency_ms or (time.perf_counter() - start) * 1000
-            rate_limited = "429" in (res.text or "")[:500] or "rate limit" in (res.text or "").lower()
+            rate_limited = res.error_kind == "rate_limited" or res.http_status == 429 or (
+                not res.ok and ("429" in (res.text or "")[:500]
+                                or "rate limit" in (res.text or "").lower()))
             self.calls.append({
                 "n": self.total + 1, "tool": tool, "token": token, "variant": variant,
-                "attempt": attempt + 1, "ok": res.ok, "error_kind": res.error_kind,
+                "attempt": attempt + 1, "ok": res.ok, "http_status": res.http_status,
+                "request_id": res.request_id, "error_kind": res.error_kind,
                 "reason": ("rate_limited" if rate_limited and not res.ok else res.reason),
-                "latency_ms": round(latency, 1),
+                "latency_ms": round(latency, 1), "credits_cost": res.credits_cost,
+                "credits_remaining": res.credits_remaining, "retries_429": res.retries,
             })
             self._write_raw(res, token, variant)
             if res.ok or not (res.error_kind in RETRYABLE or rate_limited):
@@ -159,22 +176,29 @@ class StressRun:
                     if r.ok:
                         key = "flows_parsed" if extract_sm_flow(r.text) else "flows_unparsed"
                         self.parse_stats[key] += 1
+                sides: dict[str, ToolResult] = {}
                 for side in ("BUY", "SELL"):
                     if self.total >= min_calls:
                         return
                     period = periods[rnd % len(periods)]
-                    r = await self.call("token_who_bought_sold",
-                                        who_bought_sold_args(token, side, period), sym, side)
-                    if r.ok:
-                        key = "wbs_parsed" if extract_side_volume(r.text, side) else "wbs_unparsed"
-                        self.parse_stats[key] += 1
+                    sides[side] = await self.call("token_who_bought_sold",
+                                                  who_bought_sold_args(token, side, period), sym, side)
+                if all(r.ok for r in sides.values()):
+                    buy, sell = extract_buy_sell(sides["BUY"].text, sides["SELL"].text)
+                    self.parse_stats["wbs_parsed" if buy and sell else "wbs_unparsed"] += 1
+                if self.total >= min_calls:
+                    return
+                r = await self.call("token_ohlcv", token_ohlcv_args(token), sym)
+                if r.ok:
+                    close, change = extract_ohlcv_change(r.text)
+                    self.parse_stats["ohlcv_parsed" if change is not None else "ohlcv_unparsed"] += 1
                 if self.total >= min_calls:
                     return
                 r = await self.call("token_info", token_info_args(token), sym)
                 if r.ok:
-                    price, change = extract_price_info(r.text)
-                    key = "token_info_parsed" if (price, change) != (None, None) else "token_info_unparsed"
-                    self.parse_stats[key] += 1
+                    parsed = extract_token_market(r.text) or any(
+                        v is not None for v in extract_price_info(r.text))
+                    self.parse_stats["token_info_parsed" if parsed else "token_info_unparsed"] += 1
             if self.total == before:
                 break  # a full round made no calls (e.g. empty token list): don't spin forever
 
@@ -193,6 +217,8 @@ class StressRun:
             t["avg_ms"] = round(sum(lat[tool]) / len(lat[tool]), 1)
             t["p95_ms"] = round(_p95(lat[tool]), 1)
         ok = sum(1 for c in self.calls if c["ok"])
+        remaining = [c["credits_remaining"] for c in self.calls if c.get("credits_remaining") is not None]
+        costs = [c["credits_cost"] for c in self.calls if c.get("credits_cost") is not None]
         return {
             **meta,
             "total_calls": self.total,
@@ -201,15 +227,25 @@ class StressRun:
             "per_tool": per_tool,
             "error_reasons": {k: dict(v) for k, v in reasons.items()},
             "parse_stats": dict(self.parse_stats),
+            "credits_used": sum(costs) if costs else None,
+            "credits_remaining": remaining[-1] if remaining else None,
+            # Every failed call with its request id, ready to send to Nansen support.
+            "failed_calls": [
+                {k: c.get(k) for k in ("n", "tool", "token", "variant", "http_status",
+                                       "request_id", "error_kind", "reason")}
+                for c in self.calls if not c["ok"]
+            ],
             "calls": self.calls,
         }
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Make >= N Nansen MCP calls and write a report.")
+    p = argparse.ArgumentParser(description="Make >= N Nansen API calls and write a report.")
+    p.add_argument("--backend", choices=("rest", "mcp"), default=None,
+                   help="Nansen backend (default: ZALAT_NANSEN_BACKEND or rest)")
     p.add_argument("--tokens", default=DEFAULT_TOKENS, help="comma-separated symbols")
     p.add_argument("--chain", default="ethereum")
-    p.add_argument("--periods", default="1h,1d,7d",
+    p.add_argument("--periods", default="1d,7d",
                    help=f"comma-separated flow lookback periods ({', '.join(LOOKBACK)})")
     p.add_argument("--min-calls", type=int, default=100)
     p.add_argument("--max-calls", type=int, default=None,
@@ -221,7 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_summary(rep: dict[str, Any]) -> None:
-    print(f"\nNansen MCP stress test - {rep['status']}")
+    print(f"\nNansen stress test ({rep.get('backend', 'rest')}) - {rep['status']}")
     print(f"  total calls : {rep['total_calls']}  (target {rep['min_calls']})")
     print(f"  successes   : {rep['successes']}")
     print(f"  failures    : {rep['failures']}")
@@ -232,6 +268,16 @@ def _print_summary(rep: dict[str, Any]) -> None:
             print(f"      failed: {reason} x{n}")
     if rep.get("parse_stats"):
         print(f"  parsing     : {rep['parse_stats']}")
+    if rep.get("credits_remaining") is not None:
+        print(f"  credits     : used {rep.get('credits_used')}, remaining {rep['credits_remaining']:g}")
+    failed = rep.get("failed_calls") or []
+    if failed:
+        print(f"  failed calls (request ids; full list in the report):")
+        for c in failed[:20]:
+            print(f"    #{c['n']} {c['tool']} {c['token']} {c['variant'] or ''} http={c['http_status']} "
+                  f"request_id={c['request_id']} reason={c['reason']}")
+        if len(failed) > 20:
+            print(f"    ... and {len(failed) - 20} more")
     if rep.get("error"):
         print(f"  error       : {rep['error']}")
     print(f"  report      : {rep['report_path']}")
@@ -239,7 +285,7 @@ def _print_summary(rep: dict[str, Any]) -> None:
 
 async def main(
     argv: list[str] | None = None,
-    client_factory: Callable[[Settings], Any] = NansenMCPClient,
+    client_factory: Callable[[Settings], Any] = make_client,
     settings: Settings | None = None,
     env_file: str | None = ".env",
     sleep: Callable[[float], Any] = asyncio.sleep,
@@ -247,7 +293,7 @@ async def main(
     """Run the stress test. ``client_factory``/``settings``/``sleep`` are injectable for tests.
 
     Exit codes: 0 target reached, 1 target not reached, 2 config error,
-    4 auth rejected, 5 MCP unreachable.
+    4 auth rejected, 5 Nansen unreachable.
     """
     args = build_parser().parse_args(argv)
     tokens = [t.strip() for t in args.tokens.split(",") if t.strip()]
@@ -262,6 +308,8 @@ async def main(
     if args.min_calls < 1:
         print("Error: --min-calls must be at least 1", file=sys.stderr)
         return 2
+    if args.backend:
+        os.environ["ZALAT_NANSEN_BACKEND"] = args.backend
     if settings is None:
         try:
             settings = load_settings(env_file, timeout=args.timeout)
@@ -276,6 +324,8 @@ async def main(
     t0 = time.perf_counter()
     meta: dict[str, Any] = {
         "started_at": started.replace(microsecond=0).isoformat(),
+        "backend": settings.backend,
+        "api_url": settings.rest_url if settings.backend == "rest" else settings.mcp_url,
         "mcp_url": settings.mcp_url,
         "mcp_sdk_version": _sdk_version(),
         "chain": args.chain,

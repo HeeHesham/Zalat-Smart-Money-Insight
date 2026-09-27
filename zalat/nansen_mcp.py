@@ -48,22 +48,31 @@ _REASON_RE = re.compile(r"reason:\s*([A-Za-z0-9_\-]+)", re.I)
 
 @dataclass
 class ToolResult:
-    """Outcome of one MCP tool call (success or failure)."""
+    """Outcome of one Nansen tool call (MCP or REST; success or failure)."""
 
     tool: str
     ok: bool
     text: str
     is_error: bool = False
-    #: "tool_error" | "auth" | "network" | "timeout" | "protocol" | None
+    #: "tool_error" | "auth" | "network" | "timeout" | "protocol" | "rate_limited" | None
     error_kind: str | None = None
     structured: dict | None = None
     latency_ms: float = 0.0
     #: Short machine reason, e.g. "unclassified_failure" from NANSEN_TOOL_ERROR.
     reason: str | None = None
+    # --- REST metadata (None for the MCP backend) ---
+    http_status: int | None = None
+    #: Nansen's X-Request-Id (or the error body's request_id): quote it to support.
+    request_id: str | None = None
+    credits_cost: float | None = None
+    credits_remaining: float | None = None
+    ratelimit_remaining: int | None = None
+    #: How many times a 429 was retried before this result.
+    retries: int = 0
 
 
 class NansenClient(Protocol):
-    """Anything that can call a Nansen MCP tool (real client or a test fake)."""
+    """Anything that can call a Nansen tool (MCP client, REST client or a test fake)."""
 
     async def call(self, tool: str, arguments: dict) -> ToolResult: ...
 
@@ -242,6 +251,18 @@ def who_bought_sold_args(token: TokenRef, side: str, period: str) -> dict:
                         "time_range": {"from": frm, "to": "NOW"}}}
 
 
+#: Search results on these "chains" are perp markets, not token contracts.
+NON_TOKEN_CHAINS = {"hyperliquid"}
+_EVM_ADDR = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_B58_ADDR = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,48}$")          # Solana etc.
+_OTHER_ADDR = re.compile(r"^[A-Za-z0-9:_\-\.]{20,120}$")          # TON, Sui, NEAR...
+
+
+def looks_like_address(addr: str) -> bool:
+    """True for something that looks like a token contract / mint address."""
+    return bool(_EVM_ADDR.match(addr) or _B58_ADDR.match(addr) or _OTHER_ADDR.match(addr))
+
+
 def parse_search_candidates(text: str, default_chain: str | None = None) -> list[TokenRef]:
     """Parse every token row from a ``general_search`` response."""
     # records_from() already flattens every markdown table in the text.
@@ -258,11 +279,16 @@ def parse_search_candidates(text: str, default_chain: str | None = None) -> list
                            exclude=["change", "pct", "percent", "volume"])
         if not sym_c or not addr_c or not r.get(addr_c):
             continue
+        chain = (str(r.get(chain_c, "")).strip().lower() if chain_c else "") or (default_chain or "")
+        address = str(r.get(addr_c, "")).strip()
+        # Perp markets (e.g. Hyperliquid "kPEPE") are not on-chain tokens.
+        if chain in NON_TOKEN_CHAINS or not looks_like_address(address):
+            continue
         out.append(TokenRef(
             symbol=str(r.get(sym_c, "")).strip(),
             name=str(r.get(name_c, "")).strip() if name_c else "",
-            address=str(r.get(addr_c, "")).strip(),
-            chain=(str(r.get(chain_c, "")).strip().lower() if chain_c else "") or (default_chain or ""),
+            address=address,
+            chain=chain,
             volume_24h=parse_number(r.get(vol_c)) if vol_c else None,
             price_usd=parse_number(r.get(price_c)) if price_c else None,
         ))
@@ -292,6 +318,17 @@ def token_info_args(token: TokenRef, timeframe: str = "1d") -> dict:
     """Arguments for ``token_info`` (price / market context)."""
     return {"request": {"chain": token.chain, "tokenAddress": token.address,
                         "timeframe": timeframe}}
+
+
+def token_ohlcv_args(token: TokenRef, timeframe: str = "1d") -> dict:
+    """Arguments for ``token_ohlcv`` (daily candles -> 24h price change)."""
+    return {"request": {"chain": token.chain, "tokenAddress": token.address,
+                        "timeframe": timeframe}}
+
+
+async def get_token_ohlcv(c: NansenClient, token: TokenRef) -> ToolResult:
+    """Daily OHLCV candles for the token (price context; failure is harmless)."""
+    return await c.call("token_ohlcv", token_ohlcv_args(token))
 
 
 async def get_token_info(c: NansenClient, token: TokenRef) -> ToolResult:

@@ -18,7 +18,10 @@ from dotenv import load_dotenv
 from zalat.errors import ConfigError
 
 DEFAULT_MCP_URL = "https://mcp.nansen.ai/ra/mcp/"
-DEFAULT_KEY_HEADER = "NANSEN-API-KEY"
+DEFAULT_KEY_HEADER = "NANSEN-API-KEY"        # MCP backend
+DEFAULT_REST_URL = "https://api.nansen.ai/api/v1"
+DEFAULT_REST_KEY_HEADER = "apiKey"           # REST backend
+BACKENDS = ("rest", "mcp")
 DEFAULT_FNG_URL = "https://api.alternative.me/fng/?limit=2"
 DEFAULT_LC_URL = "https://lunarcrush.com/api4"
 PLACEHOLDER_KEYS = {"your_key_here", "changeme", "xxx", "<your key>"}
@@ -31,6 +34,8 @@ _KNOWN_SECRETS: set[str] = set()
 class Settings:
     """Runtime configuration. ``repr`` never shows either key."""
 
+    #: Nansen key. May be "" for the REST backend (no key header is sent, e.g.
+    #: when a proxy injects the credential); the MCP backend requires it.
     api_key: str
     mcp_url: str = DEFAULT_MCP_URL
     key_header: str = DEFAULT_KEY_HEADER
@@ -42,11 +47,17 @@ class Settings:
     #: None = adapter disabled: no LunarCrush request is ever made.
     lunarcrush_key: str | None = None
     lunarcrush_url: str = DEFAULT_LC_URL
+    #: "rest" (default: api.nansen.ai REST) or "mcp" (Nansen MCP server).
+    backend: str = "rest"
+    rest_url: str = DEFAULT_REST_URL
+    rest_key_header: str = DEFAULT_REST_KEY_HEADER
 
     def __repr__(self) -> str:
         lc = "'***'" if self.lunarcrush_key else "None"
+        key = "'***'" if self.api_key else "''"
         return (
-            f"Settings(api_key='***', mcp_url={self.mcp_url!r}, key_header={self.key_header!r}, "
+            f"Settings(backend={self.backend!r}, api_key={key}, rest_url={self.rest_url!r}, "
+            f"rest_key_header={self.rest_key_header!r}, mcp_url={self.mcp_url!r}, key_header={self.key_header!r}, "
             f"timeout={self.timeout!r}, fng_url={self.fng_url!r}, "
             f"min_gross_usd={self.min_gross_usd!r}, lunarcrush_key={lc}, "
             f"lunarcrush_url={self.lunarcrush_url!r})"
@@ -70,19 +81,28 @@ def _clean(value: str | None) -> str:
 def load_settings(env_file: str | Path | None = ".env", timeout: float | None = None) -> Settings:
     """Load settings from ``env_file`` (if it exists) and the environment.
 
-    Raises :class:`ConfigError` when the API key is missing or still the
-    placeholder from ``.env.example``.
+    ``ZALAT_NANSEN_BACKEND`` picks ``rest`` (default) or ``mcp``. The key is
+    OPTIONAL for REST (if absent, no key header is sent) and REQUIRED for MCP:
+    a missing or placeholder key then raises :class:`ConfigError`.
     """
     if env_file is not None and Path(env_file).is_file():
         # override=False: an exported NANSEN_API_KEY beats the .env file.
         load_dotenv(env_file, override=False)
 
+    backend = (_clean(os.environ.get("ZALAT_NANSEN_BACKEND")) or "rest").lower()
+    if backend not in BACKENDS:
+        raise ConfigError(f"ZALAT_NANSEN_BACKEND must be one of {', '.join(BACKENDS)}, got {backend!r}")
+
     key = _clean(os.environ.get("NANSEN_API_KEY"))
-    if not key or key.lower() in PLACEHOLDER_KEYS:
+    if key.lower() in PLACEHOLDER_KEYS:
+        key = ""
+    if not key and backend == "mcp":
         raise ConfigError(
-            "NANSEN_API_KEY is not set. Copy .env.example to .env and paste your key (see README)."
+            "NANSEN_API_KEY is not set (required for ZALAT_NANSEN_BACKEND=mcp). "
+            "Copy .env.example to .env and paste your key (see README)."
         )
-    _KNOWN_SECRETS.add(key)
+    if key:
+        _KNOWN_SECRETS.add(key)
 
     if timeout is None:
         raw_t = _clean(os.environ.get("ZALAT_TIMEOUT"))
@@ -110,15 +130,19 @@ def load_settings(env_file: str | Path | None = ".env", timeout: float | None = 
     else:
         _KNOWN_SECRETS.add(lc_key)
 
+    header = _clean(os.environ.get("NANSEN_API_KEY_HEADER"))
     return Settings(
         api_key=key,
         mcp_url=_clean(os.environ.get("NANSEN_MCP_URL")) or DEFAULT_MCP_URL,
-        key_header=_clean(os.environ.get("NANSEN_API_KEY_HEADER")) or DEFAULT_KEY_HEADER,
+        key_header=header or DEFAULT_KEY_HEADER,
         timeout=timeout,
         fng_url=_clean(os.environ.get("ZALAT_FNG_URL")) or DEFAULT_FNG_URL,
         min_gross_usd=min_gross,
         lunarcrush_key=lc_key,
         lunarcrush_url=(_clean(os.environ.get("LUNARCRUSH_URL")) or DEFAULT_LC_URL).rstrip("/"),
+        backend=backend,
+        rest_url=(_clean(os.environ.get("NANSEN_API_URL")) or DEFAULT_REST_URL).rstrip("/"),
+        rest_key_header=header or DEFAULT_REST_KEY_HEADER,
     )
 
 

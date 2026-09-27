@@ -11,9 +11,22 @@ context**, and prints a **verdict in English and Arabic**.
 
 | Source | What it gives | Role | Needs |
 |---|---|---|---|
-| **Nansen** (MCP server) | Smart-money flows, and who bought or sold (wallets labelled Smart Trader or Fund), plus the token's price and 24h change | **Primary.** Only smart money sets the verdict's direction | A Nansen API key (**required**) |
+| **Nansen** (REST API, default; MCP server optional) | Smart-money flows, who bought or sold (wallets labelled Smart Trader or Fund), top-PnL traders' flow, price, daily candles (24h change), market cap / liquidity / holders | **Primary.** Only smart money sets the verdict's direction | A Nansen API key (optional for REST when your environment injects it; required for MCP) |
 | **LunarCrush** (API v4) | **Token-specific** social sentiment (% of posts that are positive), Galaxy Score, 24h price change | **Preferred crowd signal** when available | `LUNARCRUSH_API_KEY` on a **paid** LunarCrush plan (**optional**) |
 | **alternative.me Fear & Greed** | Mood of the **whole crypto market** (mostly driven by BTC) | Crowd signal when LunarCrush is not available; otherwise secondary context | Nothing (free) |
+
+**Nansen endpoints used (REST, default backend, `https://api.nansen.ai/api/v1`, all `POST`):**
+
+| Purpose | Endpoint | Used for |
+|---|---|---|
+| Find the token | `search/general` | contract address, live price, 24h volume |
+| Smart-money flow | `tgm/flow-intelligence` | `smart_trader_*` net flow, average flow per wallet, wallet count (scored); `top_pnl_*` (context only) |
+| Who bought / sold | `tgm/who-bought-sold` (BUY and SELL) | USD bought and sold by Smart Trader / Fund wallets |
+| Price change | `tgm/token-ohlcv` | 24h change = last daily close vs previous close |
+| Market context | `tgm/token-information` | market cap, liquidity, holders (display only) |
+
+Set `ZALAT_NANSEN_BACKEND=mcp` to use Nansen's **MCP server** (`https://mcp.nansen.ai/ra/mcp/`) instead. MCP needs a real
+`NANSEN_API_KEY`, because the MCP server forwards your key to the same REST API.
 
 > **Important:** the Fear & Greed Index is **market-wide**. It is **not** sentiment about your token. Every line that
 > shows it says so, and a verdict based only on it is capped at **Medium** confidence.
@@ -123,6 +136,13 @@ pip install -r requirements.txt
 
 ## Your Nansen API key
 
+**REST backend (default): the key is optional.** If `NANSEN_API_KEY` is not set, the tool sends **no** key header at
+all. This supports setups where a proxy or gateway injects the credential for `api.nansen.ai`. If Nansen then answers
+HTTP 401/403, the tool stops with exit code 4 and the message *"Nansen rejected the request: set NANSEN_API_KEY in
+.env"*. **MCP backend: the key is required.**
+
+To use your own key:
+
 1. Log in to Nansen and create an API key in your account/API settings.
 2. Copy the example settings file:
 
@@ -135,6 +155,9 @@ pip install -r requirements.txt
    NANSEN_API_KEY=paste-your-key-here
    ```
 
+The REST backend sends the key in the `apiKey` header, and the MCP backend sends it in `NANSEN-API-KEY`. You can
+override the header name with `NANSEN_API_KEY_HEADER`.
+
 **Never commit `.env` or share your key.** `.env` is already listed in `.gitignore`. The tool only sends the key in
 an HTTP header to Nansen. It never prints the key, and it removes it from logs, `--raw` output, JSON and stress-test
 reports.
@@ -144,6 +167,17 @@ variable wins:
 
 - macOS / Linux: `export NANSEN_API_KEY=...`
 - Windows PowerShell: `$env:NANSEN_API_KEY="..."`
+
+### Request IDs (for Nansen support)
+
+Every REST call records Nansen's `X-Request-Id` (or the `request_id` from an error body), the HTTP status, the credits
+used and remaining, and the remaining rate limit. You can see them in two places:
+
+- with `--raw`: `=== token_ohlcv ok=True http=200 request_id=17660b… credits_cost=1 credits_remaining=28080 ===`
+- with `-v`: one log line per call
+
+The stress report lists them for every call. On HTTP 429 the tool waits as told by `Retry-After` / `Ratelimit-Reset`
+and retries up to 3 times.
 
 ---
 
@@ -203,7 +237,7 @@ Other options: `--timeout 60` (network timeout in seconds), `-v` (debug log, key
 | 2 | Bad arguments, or `NANSEN_API_KEY` missing |
 | 3 | The search worked but found no token with that symbol on that chain (try `--address`) |
 | 4 | Nansen rejected the API key (HTTP 401/403) |
-| 5 | Nansen MCP server unreachable, or the token search call itself failed (with `--address`, an unreachable server gives a sentiment-only verdict and exit 0) |
+| 5 | Nansen unreachable, or the token search call itself failed (with `--address`, an unreachable server gives a sentiment-only verdict and exit 0) |
 
 LunarCrush, Fear & Greed and `token_info` problems never change the exit code. They only mark that signal as unavailable.
 
@@ -211,7 +245,43 @@ LunarCrush, Fear & Greed and `token_info` problems never change the exit code. T
 
 ## Sample output
 
-> **Illustrative only.** These numbers are made up to show the format, and are not real market data.
+**Real output** from a live run on 2026-09-27: `python -m zalat PEPE` with the REST backend, no LunarCrush key, English
+part only. Real Nansen and Fear & Greed data at that moment, not a prediction:
+
+```text
+Zalat Smart Money Verdict
+Token: PEPE (Pepe) on ethereum, lookback 1d
+Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933
+------------------------------------------------------------
+VERDICT: No clear divergence between smart money and the overall market mood  [Neutral]
+Either smart money or the market-wide mood has no strong direction.
+Disagreement: no
+
+Smart money: Neutral (weak), score -0.02
+  - Net flow: -$1.5k (12 wallets, avg $6.8k per wallet, estimated gross $82.1k)
+  - Smart buyers vs sellers: $0.00 bought / $0.00 sold (score n/a)
+  - Top PnL traders net flow (context, not scored): -$165.3k (17 wallets)
+Price: $0.000004417 (-0.1% over 24h, source Nansen OHLCV)
+Market context: market cap $1.8B, liquidity $17.1M, holders 409,320
+Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Greed (70/100) - alternative.me Fear & Greed
+Divergence score: +0.01 (positive = smart money leans against the overall market mood)
+
+Confidence: Low
+Why:
+  - no smart-money buys or sells in this period
+  - only one of the two smart-money signals was available
+  - only the market-wide mood was available, not this token's own crowd (capped at Medium)
+  - smart-money signal is weak (strength 0.02, below 0.40)
+
+Mild lean: smart money slightly negative.
+Token social sentiment: not configured - needs a paid LunarCrush API plan (set LUNARCRUSH_API_KEY). Future work; this verdict compares smart money with market-wide mood instead.
+
+Not financial advice. For research and education only.
+```
+
+On that day no labelled smart-money wallet traded PEPE in the last 24h (both BUY and SELL lists were empty), so only
+the flow signal was available and confidence is Low. The two samples below are **illustrative only**. Their numbers
+are made up to show the other verdict formats, and are not real market data.
 
 **(a) Default: no LunarCrush key.** The crowd is the market-wide mood, and the output says so:
 
@@ -305,27 +375,36 @@ Not financial advice. For research and education only.
 
 ## How the verdict is computed
 
-The tool makes these Nansen calls, all in **one MCP session**:
+The tool makes these Nansen calls. With the default REST backend they go to the endpoints listed in
+[Data sources](#data-sources); with MCP they are the matching MCP tools, all in one session:
 
 1. `general_search`: finds the token's contract address from its symbol. It needs an exact symbol match on your
-   chain, and if there are several it takes the one with the highest 24h volume. It also records the live
-   **Price USD**. `--address` skips this step.
-2. `token_recent_flows_summary`: net flow of the **Smart Money** cohort over `--period`.
-3. `token_who_bought_sold` (BUY and SELL): USD volume bought and sold by wallets labelled *30D / 90D / 180D / All Time
-   Smart Trader* and *Fund*. Any period up to `1d` uses the last day, and `7d` uses the last week.
-4. `token_info`: price and 24h change, for context only. If it fails, nothing else is affected.
+   chain, and if there are several it takes the one with the highest 24h volume. Perp markets (e.g. Hyperliquid
+   `kPEPE`) are skipped. It also records the live **price**. `--address` skips this step.
+2. `token_recent_flows_summary` (flow-intelligence): net flow of the **Smart Trader** cohort over `--period`. The
+   **top-PnL traders** cohort is shown as a context line and is not scored.
+3. `token_who_bought_sold` (BUY and SELL): wallets labelled *30D / 90D / 180D Smart Trader*, *Smart Trader* and *Fund*
+   that traded at least $10. The two lists are **merged by wallet address**, because each row carries both bought and
+   sold USD. Any period up to `1d` uses the last 24 hours, and `7d` uses the last 7 days.
+4. `token_ohlcv`: daily candles; 24h change = last close vs previous close.
+5. `token_info`: market cap, liquidity and holders, shown for context. If this or `token_ohlcv` fails, nothing else is
+   affected.
 
 While these run, the tool fetches the Fear & Greed Index and, only if `LUNARCRUSH_API_KEY` is set, the token's
 LunarCrush data. Both run at the same time as the Nansen calls.
 
 ### 1. Smart-money score `s` (-1 to +1). This alone sets the direction
 
-- `flow_score = net_flow / (inflow + outflow)`, which is the share of smart-money volume that was net buying. If Nansen
-  only reports the net figure, the tool uses `tanh(net_flow / $100k)` instead.
-- `buy_sell_score = (bought - sold) / (bought + sold)`, using **USD** volume only. Columns in native token units are
+- `flow_score = net_flow / gross_flow`, clamped to -1…+1: the share of smart-money volume that was net buying.
+  - Gross flow is inflow + outflow when Nansen reports them (MCP tables).
+  - The REST API only gives net flow, **average flow per wallet** and **wallet count**. So gross is **estimated** as
+    `avg_flow × wallet_count`, and the output says "estimated gross".
+  - If neither is available, the tool uses `tanh(net_flow / $100k)`.
+- `buy_sell_score = (bought - sold) / (bought + sold)`, using **USD** volume only, summed once per unique wallet across
+  the BUY and SELL lists. Columns in native token units are
   never added up as dollars. If there is no USD column, this part is marked unavailable.
-- **Minimum size:** both parts are multiplied by `min(1, gross / $10,000)`. For flows, gross is inflow + outflow; for
-  buy/sell, it is bought + sold. So $40 of one-sided "dust" scores about 0.004, not +1.00. You can change the threshold
+- **Minimum size:** both parts are multiplied by `min(1, gross / $10,000)`. For flows, gross is inflow + outflow (or
+  the estimate above); for buy/sell, it is bought + sold. So $40 of one-sided "dust" scores about 0.004, not +1.00. You can change the threshold
   with `ZALAT_MIN_GROSS_USD` (`0` turns the damping off).
 - `s = 0.6 × flow_score + 0.4 × buy_sell_score`. If only one part is available, `s` is that part alone.
 - `s ≥ +0.2` means **Accumulating** and `s ≤ -0.2` means **Distributing**. Anything in between is **Neutral**.
@@ -359,8 +438,9 @@ LunarCrush data. Both run at the same time as the Nansen calls.
 
 ### 4. Price context (notes and confidence only, never the verdict)
 
-The tool takes the price from the Nansen search, then from `token_info`, then from LunarCrush. The 24h change comes
-from `token_info`, then from LunarCrush. A change of +3% or more is **Rising**, -3% or less is **Falling**, and anything
+The tool takes the price from the Nansen search, then from `token_info`, then from the last OHLCV close, then from
+LunarCrush. The 24h change comes from **Nansen OHLCV** (last daily close vs the previous close), then `token_info`,
+then LunarCrush. The last daily candle is usually the current, still-open day. A change of +3% or more is **Rising**, -3% or less is **Falling**, and anything
 else is Flat. The tool then adds one of these notes:
 
 | Smart money | Price Falling | Price Rising |
@@ -404,10 +484,11 @@ python -m pytest -q
 
 ---
 
-## Stress test (100+ real Nansen MCP calls)
+## Stress test (100+ real Nansen calls)
 
-This script makes at least 100 real MCP tool calls to Nansen over a list of tokens, in one session with a short delay
-between calls. It keeps going when a call fails and counts every result.
+This script makes at least 100 real calls to Nansen over a list of tokens. It uses the REST backend by default, or
+`--backend mcp`, with one client and a short delay between calls. It keeps going when a call fails and records every
+result.
 
 ```bash
 python scripts/stress_test.py
@@ -419,40 +500,58 @@ Options:
 
 | Option | Default | Meaning |
 |---|---|---|
+| `--backend` | `ZALAT_NANSEN_BACKEND` or `rest` | `rest` or `mcp` |
 | `--tokens` | `PEPE,UNI,LINK,AAVE,SHIB,LDO,MKR,ARB,ONDO,ENA` | Comma-separated symbols (at least one) |
 | `--chain` | `ethereum` | Chain to search on |
-| `--periods` | `1h,1d,7d` | Flow lookback periods to cycle through (each must be one of `5m,1h,6h,12h,1d,7d`) |
+| `--periods` | `1d,7d` | Flow lookback periods per token (each must be one of `5m,1h,6h,12h,1d,7d`) |
 | `--min-calls` | `100` | Stop once this many calls were made |
 | `--max-calls` | min-calls + 20 | Hard cap on calls, including retries |
 | `--delay` | `0.3` | Seconds between calls |
 | `--timeout` | 30 or `ZALAT_TIMEOUT` | Network timeout in seconds |
 | `--out` | `reports` | Output folder |
 
-The script exits with 0 when the target is reached, 1 when it is not, 2 for bad options or a missing key, 4 when the
-key is rejected and 5 when Nansen is unreachable.
+The script exits with 0 when the target is reached, 1 when it is not, 2 for bad options or a missing key (MCP only),
+4 when the key is rejected and 5 when Nansen is unreachable.
 
-For each token, in rounds, it runs `general_search`, then `token_recent_flows_summary` for the `1h`, `1d` and `7d`
-periods, then `token_who_bought_sold` for BUY and SELL, then `token_info`. It stops once it reaches `--min-calls`.
-It counts **only Nansen MCP calls**, and it never calls LunarCrush or the Fear & Greed API. Network errors are
-retried up to 3 times, and each retry counts as a call. A rejected API key stops the run immediately.
+For each token, in rounds, it runs:
+
+1. `general_search`
+2. flow-intelligence for each period (`1d`, `7d`)
+3. who-bought-sold BUY and SELL
+4. `token_ohlcv`
+5. `token_info`
+
+It stops once it reaches `--min-calls`. It counts **only Nansen calls**, and it never calls LunarCrush or the Fear &
+Greed API. Network errors and rate limits (429) are retried up to 3 times, and each retry counts as a call. The REST
+client also honours `Retry-After` / `Ratelimit-Reset`. A rejected API key stops the run immediately.
 
 **Output** (the `reports/` folder is git-ignored):
 
-- `reports/stress_report.json`: total calls, successes, failures, per-tool counts and latency (avg/p95), failure
-  reasons per tool, parse statistics and a log of every call.
-- `reports/raw/<tool>_<token>[_<variant>].txt`: the raw text of the latest response for each kind of call.
+- `reports/stress_report.json`:
+  - totals, successes and failures
+  - per-tool counts and latency (avg/p95), and failure reasons per tool
+  - parse statistics
+  - `credits_used` and `credits_remaining`
+  - `calls`: **every call**, with tool, token, variant, ok, `http_status`, `request_id`, latency, credits and error
+    reason
+  - `failed_calls`: every failed call with its `request_id`, ready to send to Nansen support
+- `reports/raw/<tool>_<token>[_<variant>].txt`: the raw response of the latest call of each kind. The first line
+  holds the HTTP status and request id.
 - A summary printed to the terminal, for example:
 
 ```text
-Nansen MCP stress test - completed
+Nansen stress test (rest) - completed
   total calls : 100  (target 100)
-  successes   : 86
-  failures    : 14
-  - general_search: 30 calls, 30 ok, 0 failed, avg 850.2 ms, p95 1400.0 ms
+  successes   : 98
+  failures    : 2
+  - general_search: 15 calls, 15 ok, 0 failed, avg 650.2 ms, p95 900.0 ms
   ...
+  credits     : used 85.0, remaining 27995
+  failed calls (request ids; full list in the report):
+    #42 token_info LINK  http=500 request_id=… reason=http_500
 ```
 
-(Illustrative numbers.) The API key is never written to these files, and the script checks that before it exits.
+(Illustrative numbers.) API keys are never written to these files, and the script checks that before it exits.
 
 ---
 
@@ -461,11 +560,15 @@ Nansen MCP stress test - completed
 | Problem | What to do |
 |---|---|
 | `NANSEN_API_KEY is not set` (exit 2) | Create `.env` from `.env.example` and paste your key, or export `NANSEN_API_KEY`. |
-| `Nansen rejected the API key` (exit 4) | Check the key for typos and extra spaces, and confirm it is active and has API/MCP access in your Nansen account. If Nansen changed the header name, set `NANSEN_API_KEY_HEADER` in `.env`. |
-| `Nansen MCP unreachable` (exit 5) | Check your internet connection, VPN, proxy or firewall. If Nansen moved the endpoint, set `NANSEN_MCP_URL` in `.env`. Try `--timeout 60`. |
+| `Nansen rejected the request: set NANSEN_API_KEY in .env` (exit 4, REST) | No key was sent (or it was wrong) and Nansen answered 401/403. Put your key in `.env`. The message includes the `request_id`. |
+| `Nansen rejected the API key` (exit 4, MCP) | Check the key for typos and extra spaces, and confirm it is active and has API/MCP access in your Nansen account. If Nansen changed the header name, set `NANSEN_API_KEY_HEADER` in `.env`. |
+| MCP data tools fail with "401 Invalid API key" | The MCP server forwards your key to the REST API. Use a real key, or switch back to the default REST backend. |
+| `Nansen unreachable` (exit 5) | Check your internet connection, VPN, proxy or firewall. If Nansen moved the endpoint, set `NANSEN_API_URL` (REST) or `NANSEN_MCP_URL` (MCP) in `.env`. Try `--timeout 60`. |
+| Rate limited (429) | The tool already waits and retries 3 times. For the stress test, raise `--delay`. |
 | `Token search failed (tool_error: ...)` (exit 5) | The `general_search` call failed on Nansen's side. Try again later, pass `--address <contract>`, or send the `--raw` output. |
 | `Could not find token` (exit 3) | Check the symbol and `--chain`, or pass `--address <contract>`. |
-| Verdict says `INSUFFICIENT_DATA`, or a signal is "unavailable" | A Nansen tool returned an error (e.g. `NANSEN_TOOL_ERROR ... unclassified_failure`) or an unexpected format. Run with `--raw` and **send the `--raw` output** (e.g. `python -m zalat PEPE --raw 2> raw_output.txt`) so the parsers can be tuned. The key is never included. |
+| "no smart-money buys or sells in this period" | Real result: no labelled smart wallet traded the token in that window. Try `--period 7d`. |
+| Verdict says `INSUFFICIENT_DATA`, or a signal is "unavailable" | A Nansen call returned an error (e.g. `NANSEN_TOOL_ERROR ... unclassified_failure`, or an HTTP error) or an unexpected format. Run with `--raw` and **send the `--raw` output, including the request_id lines** (e.g. `python -m zalat PEPE --raw 2> raw_output.txt`) so the parsers can be tuned. The key is never included. |
 | "Token social sentiment: not configured" | Expected without `LUNARCRUSH_API_KEY`. The verdict uses the market-wide mood instead. Social sentiment needs a paid LunarCrush plan. |
 | "Token social sentiment: unavailable - key rejected or plan lacks social data (HTTP 402)" | Your LunarCrush key is wrong, or your plan (e.g. the free Hobby tier) has no social data. Remove the key or upgrade. |
 | "LunarCrush price does not match this token" | The ticker probably belongs to a different coin on LunarCrush, so the tool ignores it on purpose. |
@@ -474,9 +577,11 @@ Nansen MCP stress test - completed
 Settings you can put in `.env` (or the environment):
 
 ```
-NANSEN_API_KEY=...                              # required
+NANSEN_API_KEY=...                              # optional for REST (default), required for MCP
+ZALAT_NANSEN_BACKEND=rest                       # rest (default) or mcp
+NANSEN_API_URL=https://api.nansen.ai/api/v1     # REST base URL (default shown)
 NANSEN_MCP_URL=https://mcp.nansen.ai/ra/mcp/    # MCP endpoint (default shown)
-NANSEN_API_KEY_HEADER=NANSEN-API-KEY            # header that carries the key (default shown)
+NANSEN_API_KEY_HEADER=...                       # key header; default apiKey (REST) / NANSEN-API-KEY (MCP)
 ZALAT_TIMEOUT=30                                # seconds
 ZALAT_FNG_URL=https://api.alternative.me/fng/?limit=2   # Fear & Greed endpoint (default shown)
 ZALAT_MIN_GROSS_USD=10000                       # smart-money volume below this (USD) is scaled down; 0 = off
@@ -504,6 +609,10 @@ LUNARCRUSH_URL=https://lunarcrush.com/api4      # LunarCrush API base (default s
 - The exact response formats of Nansen's data tools are not publicly documented, so the parsers are deliberately
   forgiving. If a format is not recognised, that signal shows as *unavailable* rather than a wrong number. Please
   share `--raw` output if this happens.
+- **Flow gross is estimated on REST.** `tgm/flow-intelligence` has no inflow/outflow split, so the flow score uses
+  gross ≈ average flow per wallet × wallet count.
+- **Who-bought-sold is the top 25 wallets per side** (one page, trades of at least $10). Very active tokens may have
+  more smart wallets than that.
 - It analyses one token per run. There is no caching, history, backtesting, alerts or charts.
 - The thresholds and weights are simple heuristics, not a validated trading model.
 

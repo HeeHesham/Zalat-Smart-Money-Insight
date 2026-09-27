@@ -43,6 +43,14 @@ def token_label(tok: TokenRef) -> str:
     return tok.symbol
 
 
+def _signed_usd(x: float) -> str:
+    return ("+" if x > 0 else "") + fmt_usd(x)
+
+
+def _wallets_paren(f, lang: Lang) -> str:
+    return t("wallets_paren", lang, wallets=fmt_wallets(f.wallets, lang)) if f.wallets else ""
+
+
 def _crowd_name(v: Verdict, lang: Lang) -> str:
     key = "crowd_name_social" if v.crowd_source == "token_social" else "crowd_name_market"
     return t(key, lang)
@@ -85,11 +93,17 @@ def _block(v: Verdict, lang: Lang) -> str:
                        score=fmt_score(sm.score)))
     f = sm.flow
     if f is not None and f.net_usd is not None:
-        wallets = (t("wallets_part", lang, wallets=fmt_wallets(f.wallets, lang))
-                   if f.wallets is not None else "")
-        lines.append(t("flow_line", lang, net=("+" if f.net_usd > 0 else "") + fmt_usd(f.net_usd),
-                       inflow=fmt_usd(f.inflow_usd), outflow=fmt_usd(f.outflow_usd),
-                       wallets=wallets))
+        net = _signed_usd(f.net_usd)
+        if f.inflow_usd is not None or f.outflow_usd is not None:
+            wallets = (t("wallets_part", lang, wallets=fmt_wallets(f.wallets, lang))
+                       if f.wallets is not None else "")
+            lines.append(t("flow_line", lang, net=net, inflow=fmt_usd(f.inflow_usd),
+                           outflow=fmt_usd(f.outflow_usd), wallets=wallets))
+        elif f.estimated_gross_usd is not None:
+            lines.append(t("flow_line_est", lang, net=net, wallets=fmt_wallets(f.wallets, lang),
+                           avg=fmt_usd(f.avg_usd), gross=fmt_usd(f.estimated_gross_usd)))
+        else:
+            lines.append(t("flow_line_net", lang, net=net, wallets=_wallets_paren(f, lang)))
     else:
         lines.append(t("flow_na", lang))
     if sm.buy is not None and sm.sell is not None:
@@ -97,6 +111,10 @@ def _block(v: Verdict, lang: Lang) -> str:
                        sell=fmt_usd(sm.sell.volume_usd), score=fmt_score(sm.bs_score)))
     else:
         lines.append(t("bs_na", lang))
+    tp = sm.top_pnl
+    if tp is not None and tp.net_usd is not None:
+        lines.append(t("top_pnl_line", lang, net=_signed_usd(tp.net_usd),
+                       wallets=_wallets_paren(tp, lang)))
 
     # --- price context ---
     p = v.price
@@ -105,8 +123,12 @@ def _block(v: Verdict, lang: Lang) -> str:
             lines.append(t("price_line", lang, price=fmt_price(p.price_usd),
                            change=fmt_pct(p.change_pct), window=t(f"window_{p.window}", lang),
                            source=t(f"source_{p.source}", lang)))
-        else:
+        elif p.price_usd is not None:
             lines.append(t("price_line_no_change", lang, price=fmt_price(p.price_usd)))
+        if any(x is not None for x in (p.market_cap_usd, p.liquidity_usd, p.holders)):
+            holders = f"{int(p.holders):,}" if p.holders is not None else "n/a"
+            lines.append(t("market_ctx_line", lang, mcap=fmt_usd(p.market_cap_usd),
+                           liq=fmt_usd(p.liquidity_usd), holders=holders))
 
     # --- crowd: token social first when it is the primary signal ---
     social = v.social

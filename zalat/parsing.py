@@ -1,9 +1,16 @@
-"""Defensive parsing of Nansen MCP tool output.
+"""Defensive parsing of Nansen output (REST JSON and MCP text).
 
-Nansen's MCP tools return text. ``general_search`` is known to return JSON
-``{"result": "<markdown>"}`` where the markdown holds a pipe table, but the
-shapes of the data tools (flows, who bought/sold) are not documented, so every
-function here is deliberately forgiving:
+Two kinds of input:
+
+* **REST** (default backend): plain JSON, with shapes captured live in
+  ``tests/fixtures/real_*.json``. Dedicated extractors handle them:
+  :func:`extract_cohort_flow` (flat ``smart_trader_*`` keys),
+  :func:`extract_buy_sell` (BUY/SELL union by wallet), :func:`extract_ohlcv_change`
+  and :func:`extract_token_market`.
+* **MCP** text. ``general_search`` returns JSON ``{"result": "<markdown>"}`` with a
+  pipe table, and the data tools' shapes are not documented.
+
+So the generic helpers are deliberately forgiving:
 
 * the payload may be JSON, JSON-inside-a-string, or plain markdown;
 * rows may come from a JSON list of objects or from any markdown pipe table;
@@ -222,6 +229,16 @@ class SmFlow:
     outflow_usd: float | None
     wallets: int | None
     source_row: dict = field(default_factory=dict)
+    #: Average absolute flow per wallet (Nansen REST flow-intelligence). With
+    #: ``wallets`` it gives an ESTIMATED gross flow when in/out are unknown.
+    avg_usd: float | None = None
+
+    @property
+    def estimated_gross_usd(self) -> float | None:
+        """avg flow per wallet x wallet count (only when both are > 0)."""
+        if self.avg_usd and self.wallets and self.avg_usd > 0 and self.wallets > 0:
+            return self.avg_usd * self.wallets
+        return None
 
 
 _COHORT_INCLUDE = [["segment"], ["cohort"], ["label"], ["category"], ["group"], ["type"],
@@ -289,8 +306,51 @@ def _sm_subobject(payload: Any) -> dict | None:
     return None
 
 
+def _cohort_rows(payload: Any) -> list[dict[str, Any]]:
+    """Rows of a REST flow-intelligence payload: ``{"data": [{...}]}`` or a dict."""
+    if isinstance(payload, dict):
+        data = payload.get("data", payload)
+        if isinstance(data, dict):
+            return [data]
+        if isinstance(data, list):
+            return [r for r in data if isinstance(r, dict)]
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    return []
+
+
+def extract_cohort_flow(text: str, prefix: str) -> SmFlow | None:
+    """Flow of one cohort from Nansen REST ``tgm/flow-intelligence``.
+
+    That endpoint returns flat keys per cohort, e.g. ``smart_trader_net_flow_usd``,
+    ``smart_trader_avg_flow_usd``, ``smart_trader_wallet_count`` (no inflow /
+    outflow split). ``prefix`` is the cohort, e.g. "smart_trader" or "top_pnl".
+    """
+    for row in _cohort_rows(unwrap_payload(text)):
+        net = parse_number(row.get(f"{prefix}_net_flow_usd"))
+        if net is None:
+            continue
+        avg = parse_number(row.get(f"{prefix}_avg_flow_usd"))
+        w = parse_number(row.get(f"{prefix}_wallet_count"))
+        return SmFlow(net, None, None, int(w) if w is not None else None,
+                      {k: v for k, v in row.items() if k.startswith(prefix)}, avg)
+    return None
+
+
+def extract_top_pnl_flow(text: str) -> SmFlow | None:
+    """Top-PnL traders' net flow (REST): shown as secondary context only."""
+    return extract_cohort_flow(text, "top_pnl")
+
+
 def extract_sm_flow(text: str) -> SmFlow | None:
-    """Extract the Smart Money cohort's flow from a flows-summary payload."""
+    """Extract the Smart Money cohort's flow from a flows-summary payload.
+
+    Handles the REST shape (``smart_trader_*`` keys) first, then the MCP /
+    markdown / JSON cohort-table shapes.
+    """
+    rest = extract_cohort_flow(text, "smart_trader")
+    if rest is not None:
+        return rest
     payload = unwrap_payload(text)
     row = _find_sm_row(records_from(payload))
     if row is not None:
@@ -483,3 +543,81 @@ def extract_side_volume(text: str, side: str | None = None) -> BuySellSide | Non
     if wallets == 0:
         return None
     return BuySellSide(total, wallets)
+
+
+def extract_buy_sell(buy_text: str | None, sell_text: str | None
+                     ) -> tuple[BuySellSide | None, BuySellSide | None]:
+    """Buy and sell USD volume of smart wallets from the BUY and SELL lists.
+
+    Nansen REST rows carry BOTH ``bought_volume_usd`` and ``sold_volume_usd``,
+    and the BUY and SELL lists overlap. So we take the union of both lists by
+    wallet address and sum each column once per wallet (token-unit volumes
+    are ignored). ``wallets`` = number of unique addresses on both sides.
+
+    For payloads without those columns (MCP / markdown) each side is parsed on
+    its own with :func:`extract_side_volume`. Both texts are required.
+    """
+    if buy_text is None or sell_text is None:
+        return None, None
+    rows = [r for t in (buy_text, sell_text) for r in records_from(unwrap_payload(t))]
+    rest_shape = bool(rows) and all(
+        isinstance(r.get("address"), str) and r["address"]
+        and "bought_volume_usd" in r and "sold_volume_usd" in r
+        for r in rows
+    )
+    if rest_shape:
+        union: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            union.setdefault(r["address"].lower(), r)  # same wallet in both lists: count once
+        bought = sum(abs(parse_number(r.get("bought_volume_usd")) or 0.0) for r in union.values())
+        sold = sum(abs(parse_number(r.get("sold_volume_usd")) or 0.0) for r in union.values())
+        return BuySellSide(bought, len(union)), BuySellSide(sold, len(union))
+    return extract_side_volume(buy_text, "BUY"), extract_side_volume(sell_text, "SELL")
+
+
+# --------------------------------------------------------------------------- #
+# Price change from OHLCV candles, and market context (REST)
+# --------------------------------------------------------------------------- #
+def extract_ohlcv_change(text: str) -> tuple[float | None, float | None]:
+    """``(last_close, change_pct)`` from daily candles (``tgm/token-ohlcv``).
+
+    Change = last close vs the previous candle's close, in percent. The last
+    daily candle is usually the current (partial) day. Never raises.
+    """
+    try:
+        rows = records_from(unwrap_payload(text))
+        candles = []
+        for r in rows:
+            close = parse_number(r.get("close"))
+            if close is not None and close > 0:
+                candles.append((str(r.get("interval_start", "")), close))
+        if not candles:
+            return None, None
+        candles.sort(key=lambda c: c[0])  # ISO timestamps sort chronologically
+        last = candles[-1][1]
+        if len(candles) < 2:
+            return last, None
+        prev = candles[-2][1]
+        return last, (last / prev - 1.0) * 100.0
+    except Exception:  # noqa: BLE001 - context data must never break a verdict
+        return None, None
+
+
+def extract_token_market(text: str) -> dict[str, float] | None:
+    """Market context from ``tgm/token-information``: market cap, liquidity, holders."""
+    try:
+        payload = unwrap_payload(text)
+        data = payload.get("data", payload) if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return None
+        details = data.get("token_details") if isinstance(data.get("token_details"), dict) else {}
+        spot = data.get("spot_metrics") if isinstance(data.get("spot_metrics"), dict) else {}
+        out = {
+            "market_cap_usd": parse_number(details.get("market_cap_usd")),
+            "liquidity_usd": parse_number(spot.get("liquidity_usd")),
+            "holders": parse_number(spot.get("total_holders")),
+        }
+        out = {k: v for k, v in out.items() if v is not None}
+        return out or None
+    except Exception:  # noqa: BLE001
+        return None

@@ -28,6 +28,8 @@ from zalat.nansen_mcp import (
 )
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+LOW = "0x" + "1" * 40
+HIGH = "0x" + "2" * 40
 
 
 def run(coro):
@@ -55,10 +57,10 @@ def test_resolve_token_no_exact_match_and_wrong_chain():
 
 def test_resolve_token_picks_highest_volume():
     md = ("| Name | Symbol | Contract Address | Chain | Volume 24h USD |\n|--|--|--|--|--|\n"
-          "| Fake | ABC | 0xlow | ethereum | 10k |\n| Real | ABC | 0xhigh | ethereum | 5M |\n")
+          f"| Fake | ABC | {LOW} | ethereum | 10k |\n| Real | ABC | {HIGH} | ethereum | 5M |\n")
     fake = FakeNansenClient({"general_search": ok("general_search", json.dumps({"result": md}))})
     token, _ = run(resolve_token(fake, "ABC", "ethereum"))
-    assert token.address == "0xhigh"
+    assert token.address == HIGH
 
 
 def test_resolve_token_tool_error():
@@ -245,3 +247,23 @@ def test_token_info_args():
     fake = FakeNansenClient()
     res = run(get_token_info(fake, tok))
     assert fake.calls[0][0] == "token_info" and not res.ok
+
+
+def test_real_search_skips_perps_and_picks_ethereum_pepe():
+    fake = FakeNansenClient({"general_search": ok("general_search", fixture_text("real_search.json"))})
+    cands = parse_search_candidates(fixture_text("real_search.json"))
+    assert all(c.chain != "hyperliquid" for c in cands)
+    assert "kPEPE" not in {c.address for c in cands}
+    token, _ = run(resolve_token(fake, "pepe", "ethereum"))
+    assert token.address == PEPE and token.price_usd == pytest.approx(4.38653550093398e-06)
+    assert run(resolve_token(fake, "PEPE", "solana"))[0].address == \
+        "PEPEqnuuCDbBC89p1u9vpnP1KQ2oj1xTcQBsjt9X55m"  # highest-volume solana PEPE
+    assert run(resolve_token(fake, "PEPE", "hyperliquid"))[0] is None
+
+
+def test_looks_like_address():
+    from zalat.nansen_mcp import looks_like_address
+
+    assert looks_like_address(PEPE)
+    assert looks_like_address("PEPEqnuuCDbBC89p1u9vpnP1KQ2oj1xTcQBsjt9X55m")
+    assert not looks_like_address("kPEPE") and not looks_like_address("0xhigh")

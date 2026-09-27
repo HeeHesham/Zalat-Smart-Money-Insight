@@ -6,7 +6,7 @@ Exit codes:
     2  bad arguments or configuration (e.g. missing API key)
     3  token could not be resolved from its symbol
     4  Nansen rejected the API key (HTTP 401/403)
-    5  Nansen MCP unreachable, or the token search itself failed (no --address)
+    5  Nansen unreachable, or the token search itself failed (no --address)
 """
 
 from __future__ import annotations
@@ -26,15 +26,24 @@ from zalat.fng import CrowdSignal, fetch_fng
 from zalat.lunarcrush import SocialSignal, apply_price_guard, fetch_social
 from zalat.nansen_mcp import (
     LOOKBACK,
-    NansenMCPClient,
     ToolResult,
     TokenRef,
     get_flows,
     get_token_info,
+    get_token_ohlcv,
     get_who_bought_sold,
     resolve_token,
 )
-from zalat.parsing import extract_price_info, extract_side_volume, extract_sm_flow
+from zalat.nansen_rest import AUTH_MESSAGE as REST_AUTH_MESSAGE
+from zalat.nansen_rest import make_client
+from zalat.parsing import (
+    extract_buy_sell,
+    extract_ohlcv_change,
+    extract_price_info,
+    extract_sm_flow,
+    extract_token_market,
+    extract_top_pnl_flow,
+)
 from zalat.render import render_json, render_text
 from zalat.verdict import build_price_context, build_sm_signal, decide
 
@@ -119,15 +128,37 @@ def _dump_social(sig: SocialSignal, settings: Settings) -> None:
     _err(f"=== lunarcrush status={sig.status} http={sig.http_status} ===\n{detail}{err}\n", settings)
 
 
+def _meta(res: ToolResult) -> str:
+    """HTTP status / request id / credits of a REST call ("" for MCP)."""
+    parts = []
+    if res.http_status is not None:
+        parts.append(f"http={res.http_status}")
+    if res.request_id:
+        parts.append(f"request_id={res.request_id}")
+    if res.credits_cost is not None:
+        parts.append(f"credits_cost={res.credits_cost:g}")
+    if res.credits_remaining is not None:
+        parts.append(f"credits_remaining={res.credits_remaining:g}")
+    if res.retries:
+        parts.append(f"retries_429={res.retries}")
+    return (" " + " ".join(parts)) if parts else ""
+
+
 def _dump_raw(res: ToolResult, settings: Settings) -> None:
     extra = f" error={res.error_kind} reason={res.reason}" if not res.ok else ""
-    _err(f"=== {res.tool} ok={res.ok}{extra} ({res.latency_ms:.0f} ms) ===\n{res.text}\n", settings)
+    _err(f"=== {res.tool} ok={res.ok}{extra}{_meta(res)} ({res.latency_ms:.0f} ms) ===\n"
+         f"{res.text}\n", settings)
+
+
+def _log_call(res: ToolResult) -> None:
+    log.debug("%s ok=%s%s latency=%.0fms%s", res.tool, res.ok, _meta(res), res.latency_ms,
+              "" if res.ok else f" error={res.error_kind} reason={res.reason}")
 
 
 async def run(
     args: argparse.Namespace,
     settings: Settings,
-    client_factory: ClientFactory = NansenMCPClient,
+    client_factory: ClientFactory = make_client,
     fng_fetcher: FngFetcher | None = None,
     social_fetcher: SocialFetcher | None = None,
 ) -> tuple[int, str]:
@@ -135,7 +166,7 @@ async def run(
     fetch = fng_fetcher or (lambda url, timeout: fetch_fng(url, timeout))
     fetch_lc = social_fetcher or fetch_social
     # Both sentiment sources are independent of Nansen: fetch them concurrently
-    # while the MCP session runs. Without LUNARCRUSH_API_KEY, fetch_social
+    # while the Nansen calls run. Without LUNARCRUSH_API_KEY, fetch_social
     # returns "not_configured" immediately and makes no request.
     market_task = asyncio.ensure_future(fetch(settings.fng_url, settings.timeout))
     social_task = asyncio.ensure_future(fetch_lc(
@@ -152,23 +183,27 @@ async def run(
         sym = args.symbol.upper() if args.symbol else ""
         token = TokenRef(symbol=sym, name="", address=addr, chain=chain)
 
-    flow = buy = sell = None
+    flow = buy = sell = top_pnl = None
     ires: ToolResult | None = None
+    ores: ToolResult | None = None
     try:
         async with client_factory(settings) as nc:
             if token is None:
                 token, res = await resolve_token(nc, args.symbol, chain)
+                _log_call(res)
                 if args.raw:
                     _dump_raw(res, settings)
                 if token is None:
                     _cancel(market_task, social_task)
                     if not res.ok and res.error_kind == "auth":
-                        _err(f"Error: {auth_message()}", settings)
+                        msg = REST_AUTH_MESSAGE if settings.backend == "rest" else auth_message()
+                        _err(f"Error: {msg}", settings)
                         return EXIT_AUTH, ""
                     if not res.ok:
                         # The search itself failed (tool error, timeout...): that is
                         # a Nansen-side problem, not "token does not exist".
-                        _err(f"Token search failed ({res.error_kind}: {res.reason}). "
+                        rid = f", request_id {res.request_id}" if res.request_id else ""
+                        _err(f"Token search failed ({res.error_kind}: {res.reason}{rid}). "
                              "Try again, or pass --address <contract>.", settings)
                         return EXIT_UNREACHABLE, ""
                     else:
@@ -180,19 +215,19 @@ async def run(
             fres = await get_flows(nc, token, args.period)
             bres = await get_who_bought_sold(nc, token, "BUY", args.period)
             sres = await get_who_bought_sold(nc, token, "SELL", args.period)
-            for r in (fres, bres, sres):
+            # Price / market context (optional): failures here are harmless.
+            ores = await get_token_ohlcv(nc, token)
+            ires = await get_token_info(nc, token)
+            for r in (fres, bres, sres, ores, ires):
+                _log_call(r)
                 if args.raw:
                     _dump_raw(r, settings)
-                if not r.ok:
-                    log.debug("%s failed: %s %s", r.tool, r.error_kind, r.reason)
             # Each part independently: a failed or unparseable tool -> None.
             flow = extract_sm_flow(fres.text) if fres.ok else None
-            buy = extract_side_volume(bres.text, "BUY") if bres.ok else None
-            sell = extract_side_volume(sres.text, "SELL") if sres.ok else None
-            # Price context (optional): a failure here is harmless.
-            ires = await get_token_info(nc, token)
-            if args.raw:
-                _dump_raw(ires, settings)
+            top_pnl = extract_top_pnl_flow(fres.text) if fres.ok else None
+            # BUY and SELL lists are merged by wallet (REST rows carry both sides).
+            buy, sell = extract_buy_sell(bres.text if bres.ok else None,
+                                         sres.text if sres.ok else None)
     except NansenAuthError as exc:
         _cancel(market_task, social_task)
         _err(f"Error: {exc}", settings)
@@ -200,9 +235,10 @@ async def run(
     except NansenNetworkError as exc:
         if token is None:  # no --address and search never ran
             _cancel(market_task, social_task)
-            _err(f"Error: Nansen MCP unreachable at {settings.mcp_url}: {exc}", settings)
+            url = settings.rest_url if settings.backend == "rest" else settings.mcp_url
+            _err(f"Error: Nansen unreachable at {url}: {exc}", settings)
             return EXIT_UNREACHABLE, ""
-        _err(f"Warning: Nansen MCP unreachable ({exc}); showing sentiment only.", settings)
+        _err(f"Warning: Nansen unreachable ({exc}); showing sentiment only.", settings)
 
     market, social = await asyncio.gather(market_task, social_task)
     if not market.available:
@@ -212,8 +248,10 @@ async def run(
     if args.raw:
         _dump_social(social, settings)
     info = extract_price_info(ires.text) if ires is not None and ires.ok else None
-    price = build_price_context(token, info, social)
-    sm = build_sm_signal(flow, buy, sell, min_gross_usd=settings.min_gross_usd)
+    market_ctx = extract_token_market(ires.text) if ires is not None and ires.ok else None
+    ohlcv = extract_ohlcv_change(ores.text) if ores is not None and ores.ok else None
+    price = build_price_context(token, info, social, ohlcv, market_ctx)
+    sm = build_sm_signal(flow, buy, sell, min_gross_usd=settings.min_gross_usd, top_pnl=top_pnl)
     verdict = decide(token, args.period, sm, market, social, price)
     out = render_json(verdict) if args.json else render_text(verdict, args.lang)
     return EXIT_OK, redact(out, settings.secrets())
@@ -222,7 +260,7 @@ async def run(
 def main(
     argv: list[str] | None = None,
     *,
-    client_factory: ClientFactory = NansenMCPClient,
+    client_factory: ClientFactory = make_client,
     fng_fetcher: FngFetcher | None = None,
     social_fetcher: SocialFetcher | None = None,
     env_file: str | None = ".env",

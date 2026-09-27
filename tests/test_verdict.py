@@ -412,3 +412,42 @@ def test_build_price_context_priorities():
 def test_verdict_crowd_alias():
     v = decide(TOK, "1d", sm(0.7), signal_from_value(20))
     assert v.crowd is v.market_mood
+
+
+# ======================= Sprint 3: REST flow shape ======================================
+def test_estimated_gross_flow_score():
+    f = SmFlow(-1524.38, None, None, 12, {}, 6842.44)
+    s = build_sm_signal(f, None, None)
+    gross = 6842.44 * 12
+    assert s.gross_estimated and s.flow_score == pytest.approx(-1524.38 / gross)
+    assert s.wallets == 12 and not s.small_volume
+
+
+def test_estimated_gross_is_clamped_and_damped():
+    big = build_sm_signal(SmFlow(50_000, None, None, 2, {}, 1_000), None, None)  # gross 2k
+    assert big.flow_score == pytest.approx(1.0 * 2_000 / MIN_GROSS_USD) and big.small_volume
+
+
+def test_no_avg_falls_back_to_tanh():
+    s = build_sm_signal(SmFlow(2e5, None, None, 5, {}, None), None, None)
+    assert s.flow_score == pytest.approx(math.tanh(2.0)) and not s.gross_estimated
+
+
+def test_top_pnl_is_context_only():
+    tp = SmFlow(-6.6e6, None, None, 78, {}, 1.5e6)
+    a = build_sm_signal(SmFlow(1e5, None, None, 10, {}, 2e4), None, None, top_pnl=tp)
+    b = build_sm_signal(SmFlow(1e5, None, None, 10, {}, 2e4), None, None)
+    assert a.top_pnl is tp and a.score == b.score
+
+
+def test_price_context_ohlcv_priority_and_market():
+    tok = TokenRef("PEPE", "Pepe", "0x1", "ethereum", price_usd=4.4e-06)
+    p = build_price_context(tok, (None, 7.0), None, (4.37e-06, -0.1),
+                            {"market_cap_usd": 1.8e9, "liquidity_usd": 1.7e7, "holders": 409302})
+    assert (p.price_usd, p.change_pct, p.source, p.direction) == (4.4e-06, -0.1, "nansen_ohlcv", "Flat")
+    assert (p.market_cap_usd, p.liquidity_usd, p.holders) == (1.8e9, 1.7e7, 409302)
+    only_ohlcv = build_price_context(TokenRef("X", "", "0x2", "ethereum"), None, None, (2.0, 5.0))
+    assert only_ohlcv.price_usd == 2.0 and only_ohlcv.direction == "Rising"
+    only_market = build_price_context(TokenRef("X", "", "0x2", "ethereum"), None, None, None,
+                                      {"holders": 5})
+    assert only_market.price_usd is None and only_market.holders == 5
