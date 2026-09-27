@@ -219,8 +219,18 @@ def test_net_flow_bar_direction_and_labels():
 def test_nice_max_and_isolation():
     assert [nice_max(x) for x in (0, 7, 145_672, 1.2e6, 250)] == [1.0, 10, 200_000, 2e6, 250]
     out = _isolate_ltr("الدرجة -0.96 و 2026-09-27 21:07 UTC")
-    assert '<bdi dir="ltr">-0.96</bdi>' in out and '<bdi dir="ltr">2026-09-27 21:07 UTC</bdi>' in out
-    assert _isolate_ltr("<script>") == "&lt;<bdi dir=\"ltr\">script</bdi>&gt;"
+    assert '<bdi dir="ltr" class="nw">-0.96</bdi>' in out
+    assert '<bdi dir="ltr" class="nw">2026-09-27 21:07 UTC</bdi>' in out
+    assert _isolate_ltr("<script>") == "&lt;<bdi dir=\"ltr\" class=\"nw\">script</bdi>&gt;"
+    line = "ليس خاصاً بـ ChainLink (LINK)): طمع (70/100) - مؤشر الخوف والطمع alternative.me"
+    iso = _isolate_ltr(line)
+    assert '<bdi dir="ltr" class="nw">ChainLink (LINK)</bdi>' in iso
+    assert '<bdi dir="ltr" class="nw">alternative.me</bdi>' in iso
+    assert '<bdi dir="ltr" class="nw">Nansen OHLCV</bdi>' in _isolate_ltr("المصدر Nansen OHLCV)")
+    # Arabic inside brackets is never swallowed into an LTR run
+    assert "<bdi dir=\"ltr\" class=\"nw\">-$6.6M</bdi> (<bdi" in _isolate_ltr("-$6.6M (67 محفظة)")
+    # long runs (addresses) may still wrap on narrow screens
+    assert 'class="nw"' not in _isolate_ltr("0x514910771af9ca656af840dff83e8264ecf986ca")
 
 
 def test_default_card_path_and_write(tmp_path):
@@ -267,3 +277,12 @@ def test_cli_html_with_json_keeps_stdout_json(tmp_path, capsys):
     cap = capsys.readouterr()
     assert code == 0 and json.loads(cap.out)["display_name"] == "Pepe (PEPE)"
     assert f"HTML card: {target}" in cap.err and target.exists()
+
+
+def test_card_banner_not_repeated_in_section_3_text():
+    html = render_card(make())
+    assert html.count("&gt;&gt;&gt; DISAGREEMENT") == 1  # only the top banner
+    sec3 = html[html.index("3 · FINAL VERDICT"):]
+    assert "&gt;&gt;&gt;" not in sec3 and 'class="tiles"' in sec3
+    # terminal output keeps it
+    assert ">>> DISAGREEMENT" in render_text(make(), "en")

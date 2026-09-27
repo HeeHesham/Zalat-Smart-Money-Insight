@@ -109,6 +109,7 @@ svg .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-n
 #tip { position: absolute; pointer-events: none; background: var(--surface); color: var(--ink);
   border: 1px solid var(--axis); border-radius: 6px; padding: 4px 8px; font-size: 13px;
   font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.15); z-index: 10; max-width: 280px; }
+bdi.nw { white-space: nowrap; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .foot { color: var(--ink-2); font-size: 13px; display: grid; gap: 2px; }
@@ -388,8 +389,9 @@ def tiles_facts(v: Verdict) -> str:
 #: A run of left-to-right material inside Arabic text: numbers, $ amounts,
 #: dates, addresses, Latin words (Nansen, UTC...), possibly several separated
 #: by spaces ("2026-09-27 21:07 UTC").
-_LTR_TOKEN = r"[+\-−]?\$?[0-9A-Za-z_][\w.,:%/$…\-]*"
-_LTR_PAREN = r"(?:\s*\([0-9A-Za-z_$][\w .,:%/$…\-]*\))?"   # "Pepe (PEPE)", "$218.5k (Nansen)"
+# ASCII only: \w would also match Arabic letters and swallow them into the LTR run.
+_LTR_TOKEN = r"[+\-−]?\$?[0-9A-Za-z_][0-9A-Za-z_.,:%/$…\-]*"
+_LTR_PAREN = r"(?:\s*\([0-9A-Za-z_$][0-9A-Za-z_ .,:%/$…\-]*\))?"   # "ChainLink (LINK)"
 _LTR_RUN = re.compile(rf"{_LTR_TOKEN}{_LTR_PAREN}(?:\s+{_LTR_TOKEN}{_LTR_PAREN})*")
 
 
@@ -399,7 +401,11 @@ def _isolate_ltr(text: str) -> str:
     out, pos = [], 0
     for m in _LTR_RUN.finditer(text):
         out.append(_e(text[pos:m.start()]))
-        out.append(f'<bdi dir="ltr">{_e(m.group(0))}</bdi>')
+        run = m.group(0)
+        # Short runs ("ChainLink (LINK)", "Nansen OHLCV", "alternative.me") must not
+        # be split by a line wrap: a broken isolate scrambles the brackets in RTL.
+        cls = ' class="nw"' if len(run) <= 32 else ""
+        out.append(f'<bdi dir="ltr"{cls}>{_e(run)}</bdi>')
         pos = m.end()
     out.append(_e(text[pos:]))
     return "".join(out)
@@ -442,6 +448,9 @@ def render_card(v: Verdict) -> str:
     sections = []
     for i in range(1, 4):
         (h_en, l_en), (h_ar, l_ar) = en[i], ar[i]
+        if i == 3:  # the disagreement banner is already shown at the top of the card
+            l_en = [ln for ln in l_en if not ln.startswith(">>>")]
+            l_ar = [ln for ln in l_ar if not ln.startswith(">>>")]
         sections.append(
             f'<section class="panel" aria-label="{_e(h_en)}">'
             f'<h2><span lang="en">{_e(h_en)}</span><span lang="ar" dir="rtl">{_e(h_ar)}</span></h2>'
