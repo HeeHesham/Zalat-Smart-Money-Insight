@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable
 
 from zalat import __version__
 from zalat.config import Settings, load_settings, redact
-from zalat.errors import ConfigError, NansenAuthError, NansenNetworkError
+from zalat.errors import ConfigError, NansenAuthError, NansenNetworkError, auth_message
 from zalat.fng import CrowdSignal, fetch_fng
 from zalat.nansen_mcp import (
     LOOKBACK,
@@ -54,11 +54,6 @@ class _RedactFilter(logging.Filter):
         record.msg = redact(record.getMessage(), self.secrets)
         record.args = ()
         return True
-
-
-def short_address(addr: str) -> str:
-    """``0x6982508145454ce325ddbe47a25d4ec3d2311933`` -> ``0x6982…1933``."""
-    return addr if len(addr) <= 12 else f"{addr[:6]}…{addr[-4:]}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -122,7 +117,9 @@ async def run(
     if args.address:
         addr = args.address.strip()
         # Without a symbol, show a shortened address rather than inventing a ticker.
-        sym = args.symbol.upper() if args.symbol else short_address(addr)
+        # Without a symbol we keep it empty (JSON gets ""); text output shows
+        # a shortened address instead of inventing a ticker.
+        sym = args.symbol.upper() if args.symbol else ""
         token = TokenRef(symbol=sym, name="", address=addr, chain=chain)
 
     flow = buy = sell = None
@@ -134,12 +131,15 @@ async def run(
                     _dump_raw(res, settings)
                 if token is None:
                     crowd_task.cancel()
+                    if not res.ok and res.error_kind == "auth":
+                        _err(f"Error: {auth_message()}", settings)
+                        return EXIT_AUTH, ""
                     if not res.ok:
                         # The search itself failed (tool error, timeout...): that is
                         # a Nansen-side problem, not "token does not exist".
                         _err(f"Token search failed ({res.error_kind}: {res.reason}). "
                              "Try again, or pass --address <contract>.", settings)
-                        return (EXIT_AUTH if res.error_kind == "auth" else EXIT_UNREACHABLE), ""
+                        return EXIT_UNREACHABLE, ""
                     else:
                         _err(f"Could not find token '{args.symbol}' on chain '{chain}'. "
                              "Check the symbol/chain or pass --address <contract>.", settings)
@@ -172,7 +172,7 @@ async def run(
     crowd = await crowd_task
     if not crowd.available:
         log.debug("Fear & Greed unavailable: %s", crowd.error)
-    sm = build_sm_signal(flow, buy, sell)
+    sm = build_sm_signal(flow, buy, sell, min_gross_usd=settings.min_gross_usd)
     verdict = decide(token, args.period, sm, crowd)
     out = render_json(verdict) if args.json else render_text(verdict, args.lang)
     return EXIT_OK, redact(out, [settings.api_key])

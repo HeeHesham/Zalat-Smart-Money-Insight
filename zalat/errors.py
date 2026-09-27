@@ -40,6 +40,12 @@ class NansenProtocolError(ZalatError):
     """Anything else that went wrong while speaking MCP."""
 
 
+def auth_message(status: int | None = None) -> str:
+    """The one message shown whenever Nansen rejects the key."""
+    http = f" (HTTP {status})" if status else ""
+    return f"Nansen rejected the API key{http}. Check NANSEN_API_KEY / NANSEN_API_KEY_HEADER."
+
+
 def _flatten(exc: BaseException) -> list[BaseException]:
     """Return the leaf exceptions of a (nested) exception group."""
     if isinstance(exc, BaseExceptionGroup):
@@ -71,10 +77,7 @@ def classify_exception(exc: BaseException, secrets: Iterable[str] = ()) -> Zalat
         if isinstance(leaf, httpx.HTTPStatusError):
             code = leaf.response.status_code
             if code in (401, 403):
-                return NansenAuthError(
-                    f"Nansen rejected the API key (HTTP {code}). "
-                    "Check NANSEN_API_KEY / NANSEN_API_KEY_HEADER."
-                )
+                return NansenAuthError(auth_message(code))
             return NansenNetworkError(f"Nansen MCP returned HTTP {code}")
         if isinstance(leaf, (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError)):
             return NansenNetworkError("timeout while talking to Nansen MCP")

@@ -138,7 +138,10 @@ def test_search_auth_tool_error_exit_4(key, capsys):
     res = ToolResult("general_search", False, "NANSEN_TOOL_ERROR: Unauthorized", True, "auth",
                      reason="auth")
     code, _ = cli(["PEPE"], FakeNansenClient({"general_search": res}))
+    err = capsys.readouterr().err
     assert code == 4
+    assert "Nansen rejected the API key. Check NANSEN_API_KEY / NANSEN_API_KEY_HEADER." in err
+    assert "Token search failed" not in err and "auth: auth" not in err
 
 
 def test_address_without_symbol_uses_short_address(key, capsys):
@@ -227,3 +230,31 @@ def test_unexpected_error_exit_1(key, capsys):
     code, _ = cli(["PEPE"], FakeNansenClient({"general_search": boom}))
     err = capsys.readouterr().err
     assert code == 1 and "weird ***" in err and FAKE_KEY not in err
+
+
+def test_address_only_json_symbol_is_empty(key, capsys):
+    addr = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+    code, _ = cli(["--address", addr, "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert code == 0 and data["token"]["symbol"] == "" and data["token"]["address"] == addr
+
+
+def test_min_gross_env_reaches_verdict(key, monkeypatch, capsys):
+    # Happy-path volumes are ~$1-2M; a $10M minimum damps them to Neutral.
+    monkeypatch.setenv("ZALAT_MIN_GROSS_USD", "10000000")
+    cli(["PEPE", "--json"], fng=20)
+    data = json.loads(capsys.readouterr().out)
+    assert data["sm"]["small_volume"] is True
+    assert {"key": "small_volume", "params": {}} in data["reasons"]
+
+
+def test_dust_does_not_trigger_banner(key, capsys):
+    responses = happy_responses()
+    responses["token_recent_flows_summary"] = ok(
+        "token_recent_flows_summary",
+        "| Segment | Inflow | Outflow | Net Flow |\n|--|--|--|--|\n| Smart Money | $40 | $0 | $40 |")
+    responses["token_who_bought_sold"] = lambda a: ok("token_who_bought_sold", json.dumps(
+        {"data": [{"volumeUsd": 10 if a["request"]["buy_or_sell"] == "BUY" else 0}]}))
+    code, _ = cli(["PEPE"], FakeNansenClient(responses), fng=15)
+    out = capsys.readouterr().out
+    assert code == 0 and ">>>" not in out and "No clear divergence" in out

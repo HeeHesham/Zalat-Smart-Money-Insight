@@ -102,7 +102,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "one_sm_part": "only one of the two smart-money signals was available",
         "weak_signal": "smart-money signal is weak (strength {s}, below 0.40)",
         "parts_disagree": "net flow and buyer/seller balance point in different directions",
-        "low_wallets": "only {n} smart wallets involved",
+        "low_wallets": "few smart-money wallets involved (only {wallets})",
+        "small_volume": "small smart-money volume (under the minimum size, signal scaled down)",
         "crowd_neutral": "crowd mood is close to neutral (45-55)",
         # notes
         "crowded_trade": "Note: Extreme Greed - this may be a crowded trade.",
@@ -138,7 +139,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "one_sm_part": "توفرت إشارة واحدة فقط من إشارتي الأموال الذكية",
         "weak_signal": "إشارة الأموال الذكية ضعيفة (قوتها {s}، أقل من 0.40)",
         "parts_disagree": "صافي التدفق وتوازن الشراء/البيع في اتجاهين مختلفين",
-        "low_wallets": "عدد المحافظ الذكية المشاركة {n} فقط",
+        "low_wallets": "عدد قليل من محافظ الأموال الذكية ({wallets} فقط)",
+        "small_volume": "حجم تداول الأموال الذكية صغير (أقل من الحد الأدنى، لذا خُفِّضت الإشارة)",
         "crowd_neutral": "مزاج الجمهور قريب من المحايد (45-55)",
         "crowded_trade": "ملاحظة: طمع شديد - قد تكون صفقة مزدحمة.",
         "capitulation": "ملاحظة: الطرفان متشائمان - قد يدل ذلك على استسلام البائعين.",
@@ -198,12 +200,15 @@ def kind_text(kind: str, lang: Lang) -> tuple[str, str, str]:
 def t(key: str, lang: Lang, **kw: object) -> str:
     """Look up ``key`` in ``lang`` and format it with ``kw``.
 
-    Float parameters named ``s`` are shown as absolute two-decimal values.
+    Float parameters named ``s`` are shown as absolute two-decimal values; an
+    int ``n`` also provides ``{wallets}`` (pluralised wallet count).
     Unknown keys fall back to English, then to the key itself.
     """
     template = STRINGS[lang].get(key) or STRINGS["en"].get(key) or key
     if "s" in kw and isinstance(kw["s"], float):
         kw["s"] = f"{abs(kw['s']):.2f}"
+    if isinstance(kw.get("n"), int) and "wallets" not in kw:
+        kw["wallets"] = fmt_wallets(kw["n"], lang)  # correct plural in both languages
     try:
         return template.format(**kw)
     except (KeyError, IndexError):

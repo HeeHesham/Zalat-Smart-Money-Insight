@@ -77,3 +77,14 @@ def test_env_example_is_placeholder_and_gitignore_covers_env():
     assert "NANSEN_API_KEY=your_key_here" in example
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
     assert ".env" in ignore and "reports/" in ignore
+
+
+def test_min_gross_env(monkeypatch):
+    monkeypatch.setenv("NANSEN_API_KEY", FAKE_KEY)
+    assert load_settings(None).min_gross_usd is None
+    monkeypatch.setenv("ZALAT_MIN_GROSS_USD", "2500")
+    assert load_settings(None).min_gross_usd == 2500.0
+    for bad in ("lots", "-5"):
+        monkeypatch.setenv("ZALAT_MIN_GROSS_USD", bad)
+        with pytest.raises(ConfigError):
+            load_settings(None)

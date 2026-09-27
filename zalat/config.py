@@ -35,11 +35,14 @@ class Settings:
     key_header: str = DEFAULT_KEY_HEADER
     timeout: float = 30.0
     fng_url: str = DEFAULT_FNG_URL
+    #: None = use verdict.MIN_GROSS_USD (set via ZALAT_MIN_GROSS_USD).
+    min_gross_usd: float | None = None
 
     def __repr__(self) -> str:
         return (
             f"Settings(api_key='***', mcp_url={self.mcp_url!r}, key_header={self.key_header!r}, "
-            f"timeout={self.timeout!r}, fng_url={self.fng_url!r})"
+            f"timeout={self.timeout!r}, fng_url={self.fng_url!r}, "
+            f"min_gross_usd={self.min_gross_usd!r})"
         )
 
     __str__ = __repr__
@@ -79,12 +82,23 @@ def load_settings(env_file: str | Path | None = ".env", timeout: float | None = 
     if timeout <= 0:
         raise ConfigError("timeout must be positive")
 
+    raw_g = _clean(os.environ.get("ZALAT_MIN_GROSS_USD"))
+    min_gross: float | None = None
+    if raw_g:
+        try:
+            min_gross = float(raw_g)
+        except ValueError as exc:
+            raise ConfigError(f"ZALAT_MIN_GROSS_USD must be a number, got {raw_g!r}") from exc
+        if min_gross < 0:
+            raise ConfigError("ZALAT_MIN_GROSS_USD must be >= 0")
+
     return Settings(
         api_key=key,
         mcp_url=_clean(os.environ.get("NANSEN_MCP_URL")) or DEFAULT_MCP_URL,
         key_header=_clean(os.environ.get("NANSEN_API_KEY_HEADER")) or DEFAULT_KEY_HEADER,
         timeout=timeout,
         fng_url=_clean(os.environ.get("ZALAT_FNG_URL")) or DEFAULT_FNG_URL,
+        min_gross_usd=min_gross,
     )
 
 

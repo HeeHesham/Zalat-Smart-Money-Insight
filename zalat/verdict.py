@@ -39,6 +39,10 @@ CONF_WEAK_SIGNAL = 0.4     # |s| below this downgrades confidence
 CROWD_DISAGREE_MIN = 0.1   # |c| must exceed this for a disagreement flag
 MIN_WALLETS = 3            # fewer smart wallets than this downgrades confidence
 DEFAULT_FLOW_SCALE = 1e5   # USD, used when gross in/out flow is unknown
+#: Below this much gross smart-money volume (USD) a part is scaled down
+#: linearly, so $40 of one-sided "dust" can't produce a +1.00 strong signal.
+#: Override with ZALAT_MIN_GROSS_USD (0 disables the damping).
+MIN_GROSS_USD = 10_000.0
 
 KINDS = (
     "CONTRARIAN_BULLISH",
@@ -70,6 +74,8 @@ class SmartMoneySignal:
     strength: str | None            # strong | moderate | weak | None
     wallets: int | None
     unavailable_reasons: list[tuple[str, dict]] = field(default_factory=list)
+    #: True if any available part was damped for having < MIN_GROSS_USD volume.
+    small_volume: bool = False
 
 
 @dataclass
@@ -112,23 +118,43 @@ def sm_strength(score: float | None) -> str | None:
     return "weak"
 
 
+def _size_factor(gross: float, min_gross: float) -> float:
+    """Linear damping for small volume: 1.0 at/above ``min_gross``, less below."""
+    if min_gross <= 0:
+        return 1.0
+    return min(1.0, abs(gross) / min_gross)
+
+
 def build_sm_signal(
     flow: SmFlow | None,
     buy: BuySellSide | None,
     sell: BuySellSide | None,
     flow_scale: float = DEFAULT_FLOW_SCALE,
+    min_gross_usd: float | None = None,
 ) -> SmartMoneySignal:
-    """Combine the flow and buy/sell parts into one smart-money signal."""
+    """Combine the flow and buy/sell parts into one smart-money signal.
+
+    Each part is a direction ratio in [-1, 1] multiplied by a size factor
+    ``min(1, gross / min_gross_usd)``: a one-sided but tiny flow counts as
+    tiny, not as a strong signal.
+    """
+    min_gross = MIN_GROSS_USD if min_gross_usd is None else min_gross_usd
     reasons: list[tuple[str, dict]] = []
+    small = False
 
     flow_score = None
     if flow is not None and flow.net_usd is not None:
         if flow.inflow_usd is not None and flow.outflow_usd is not None:
-            gross = max(abs(flow.inflow_usd) + abs(flow.outflow_usd), 1.0)
+            gross = abs(flow.inflow_usd) + abs(flow.outflow_usd)
             # Clamp: a reported net can disagree slightly with in/out.
-            flow_score = max(-1.0, min(1.0, flow.net_usd / gross))
+            ratio = max(-1.0, min(1.0, flow.net_usd / max(gross, 1.0)))
+            flow_score = ratio * _size_factor(gross, min_gross)
         else:
+            # Only the net is known. tanh(net / flow_scale) already shrinks
+            # small nets toward 0; |net| is the best lower bound on gross.
+            gross = abs(flow.net_usd)
             flow_score = math.tanh(flow.net_usd / flow_scale)
+        small = small or gross < min_gross
     else:
         reasons.append(("flow_unavailable", {}))
 
@@ -137,7 +163,9 @@ def build_sm_signal(
             and sell.volume_usd is not None:
         total = buy.volume_usd + sell.volume_usd
         if total > 0:
-            bs_score = (buy.volume_usd - sell.volume_usd) / total
+            bs_score = ((buy.volume_usd - sell.volume_usd) / total
+                        * _size_factor(total, min_gross))
+            small = small or total < min_gross
         else:
             reasons.append(("no_sm_trades", {}))
     else:
@@ -157,7 +185,7 @@ def build_sm_signal(
         wallets = max(buy.wallets, sell.wallets)
 
     return SmartMoneySignal(flow, buy, sell, flow_score, bs_score, score,
-                            sm_label(score), sm_strength(score), wallets, reasons)
+                            sm_label(score), sm_strength(score), wallets, reasons, small)
 
 
 def _classify(sm: SmartMoneySignal, crowd: CrowdSignal) -> str:
@@ -196,6 +224,9 @@ def _confidence(sm: SmartMoneySignal, crowd: CrowdSignal) -> tuple[str, list[tup
     if sm.wallets is not None and sm.wallets < MIN_WALLETS:
         level -= 1
         reasons.append(("low_wallets", {"n": sm.wallets}))
+    if sm.small_volume:
+        level -= 1
+        reasons.append(("small_volume", {}))
     if crowd.value is not None and 45 <= crowd.value <= 55:
         level -= 1
         reasons.append(("crowd_neutral", {}))

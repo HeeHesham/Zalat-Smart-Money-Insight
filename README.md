@@ -236,6 +236,10 @@ The tool makes these calls, all in **one MCP session**:
   `tanh(net_flow / $100k)` instead.
 - `buy_sell_score = (bought - sold) / (bought + sold)`, using **USD** volume only. Columns in native token units are
   never added up as dollars. If there is no USD column, this part is marked unavailable.
+- **Minimum size:** both parts are multiplied by `min(1, gross / $10,000)`. For flows, gross is inflow + outflow; for
+  buy/sell, it is bought + sold. So $40 of one-sided "dust" scores about 0.004, not a strong +1.00. Below $10k the tool
+  also lowers confidence with the reason "small smart-money volume". You can change the threshold with
+  `ZALAT_MIN_GROSS_USD` (`0` turns the damping off). In the net-only fallback, `tanh` already shrinks small values.
 - `s = 0.6 × flow_score + 0.4 × buy_sell_score`. If only one part is available, `s` is that part alone.
 - `s ≥ +0.2` means **Accumulating** and `s ≤ -0.2` means **Distributing**. Anything in between is **Neutral**.
   Strength is *strong* when `|s| ≥ 0.6`, *moderate* when `|s| ≥ 0.2`, and *weak* below that.
@@ -250,7 +254,7 @@ includes both.
 
 **Confidence** starts at High when both smart-money signals are available and at Medium when only one is. It drops one
 level for each of these: a weak signal (`|s| < 0.4`), net flow and buy/sell pointing in different directions, fewer
-than 3 smart wallets, or a crowd value between 45 and 55. The wallet count comes from the flows summary. If that is
+than 3 smart wallets, smart-money volume under the minimum size, or a crowd value between 45 and 55. The wallet count comes from the flows summary. If that is
 missing, the tool uses the larger of the buyer and seller counts, which is a lower bound: a wallet can appear on both
 sides, so adding the two would double-count. It is Low whenever Nansen data or the Fear & Greed Index is
 unavailable. The reasons are printed under **Why:**.
@@ -327,7 +331,7 @@ Nansen MCP stress test - completed
 | Problem | What to do |
 |---|---|
 | `NANSEN_API_KEY is not set` (exit 2) | Create `.env` from `.env.example` and paste your key, or export `NANSEN_API_KEY`. |
-| `Nansen rejected the API key (HTTP 401/403)` (exit 4) | Check the key for typos and extra spaces, and confirm it is active and has API/MCP access in your Nansen account. If Nansen changed the header name, set `NANSEN_API_KEY_HEADER` in `.env`. |
+| `Nansen rejected the API key` (exit 4) | Check the key for typos and extra spaces, and confirm it is active and has API/MCP access in your Nansen account. If Nansen changed the header name, set `NANSEN_API_KEY_HEADER` in `.env`. |
 | `Nansen MCP unreachable` (exit 5) | Check your internet connection, VPN, proxy or firewall. If Nansen moved the endpoint, set `NANSEN_MCP_URL` in `.env`. Try `--timeout 60`. |
 | `Token search failed (tool_error: ...)` (exit 5) | The `general_search` call failed on Nansen's side. Try again later, pass `--address <contract>`, or send the `--raw` output. |
 | `Could not find token` (exit 3) | Check the symbol and `--chain`, or pass `--address <contract>`. |
@@ -342,6 +346,7 @@ NANSEN_MCP_URL=https://mcp.nansen.ai/ra/mcp/    # MCP endpoint (default shown)
 NANSEN_API_KEY_HEADER=NANSEN-API-KEY            # header that carries the key (default shown)
 ZALAT_TIMEOUT=30                                # seconds
 ZALAT_FNG_URL=https://api.alternative.me/fng/?limit=2   # Fear & Greed endpoint (default shown)
+ZALAT_MIN_GROSS_USD=10000                       # smart-money volume below this (USD) is scaled down; 0 = off
 ```
 
 ---

@@ -14,8 +14,16 @@ from zalat.verdict import DISAGREEMENT_KINDS, Verdict
 DIVIDER = "=" * 60
 
 
+def short_address(addr: str) -> str:
+    """``0x6982508145454ce325ddbe47a25d4ec3d2311933`` -> ``0x6982…1933``."""
+    return addr if len(addr) <= 12 else f"{addr[:6]}…{addr[-4:]}"
+
+
 def token_label(tok: TokenRef) -> str:
-    """"PEPE (Pepe)", or just "PEPE" when there is no distinct name."""
+    """"PEPE (Pepe)"; "PEPE" when there is no distinct name; a shortened
+    address when there is no symbol (``--address`` without a symbol)."""
+    if not tok.symbol:
+        return short_address(tok.address)
     if tok.name and tok.name != tok.symbol:
         return f"{tok.symbol} ({tok.name})"
     return tok.symbol

@@ -38,8 +38,11 @@ def test_fmt():
 
 
 def test_t_formats_and_falls_back():
-    assert t("low_wallets", "en", n=2) == "only 2 smart wallets involved"
-    assert "2" in t("low_wallets", "ar", n=2)
+    assert t("low_wallets", "en", n=2) == "few smart-money wallets involved (only 2 wallets)"
+    assert t("low_wallets", "en", n=1) == "few smart-money wallets involved (only 1 wallet)"
+    assert "1 wallets" not in t("low_wallets", "en", n=1)
+    assert "2 محفظتان" in t("low_wallets", "ar", n=2)
+    assert "1 محفظة" in t("low_wallets", "ar", n=1)
     assert t("unknown_key", "ar") == "unknown_key"
 
 
@@ -142,3 +145,20 @@ def test_token_label():
     assert token_label(TokenRef("PEPE", "PEPE", "0x1", "ethereum")) == "PEPE"
     assert token_label(TokenRef("PEPE", "", "0x1", "ethereum")) == "PEPE"
     assert token_label(TokenRef("PEPE", "Pepe", "0x1", "ethereum")) == "PEPE (Pepe)"
+
+
+def test_small_volume_reason_rendered_both_languages():
+    v = decide(TOK, "1d", build_sm_signal(SmFlow(40, 40, 0, None, {}), None, None), signal_from_value(15))
+    en, ar = render_text(v, "en"), render_text(v, "ar")
+    assert "small smart-money volume" in en
+    assert "حجم تداول الأموال الذكية صغير" in ar
+    assert ">>>" not in en  # dust must not trigger the disagreement banner
+
+
+def test_address_only_token_label_and_json_symbol():
+    tok = TokenRef("", "", "0x6982508145454ce325ddbe47a25d4ec3d2311933", "ethereum")
+    v = decide(tok, "1d", build_sm_signal(None, None, None), signal_from_value(40))
+    assert "Token: 0x6982…1933 on ethereum" in render_text(v, "en")
+    data = json.loads(render_json(v))
+    assert data["token"]["symbol"] == ""
+    assert data["token"]["address"] == tok.address

@@ -166,3 +166,51 @@ def test_flow_score_tanh_fallback_when_gross_unknown():
 def test_wallets_not_double_counted():
     s = build_sm_signal(None, BuySellSide(1e5, 5), BuySellSide(1e5, 3))
     assert s.wallets == 5
+
+
+# ---- minimum-size damping ------------------------------------------------------------
+from zalat.verdict import MIN_GROSS_USD  # noqa: E402
+
+
+def test_dust_flow_is_damped_not_strong():
+    s = build_sm_signal(SmFlow(40, 40, 0, None, {}), None, None)
+    assert s.flow_score == pytest.approx(40 / MIN_GROSS_USD)
+    assert s.label == "Neutral" and s.small_volume
+    v = decide(TOK, "1d", s, signal_from_value(15))
+    assert v.kind == "NEUTRAL" and not v.disagreement
+    assert ("small_volume", {}) in v.reasons
+
+
+def test_dust_buy_sell_is_damped():
+    s = build_sm_signal(None, BuySellSide(10, 1), BuySellSide(0, 0))
+    assert s.bs_score == pytest.approx(10 / MIN_GROSS_USD)
+    assert s.label == "Neutral" and s.small_volume
+
+
+def test_damping_is_linear_below_and_off_above_threshold():
+    half = build_sm_signal(SmFlow(5_000, 5_000, 0, None), None, None)
+    assert half.flow_score == pytest.approx(0.5)
+    full = build_sm_signal(SmFlow(10_000, 10_000, 0, None), None, None)
+    assert full.flow_score == pytest.approx(1.0) and not full.small_volume
+    bs = build_sm_signal(None, BuySellSide(3_000, 2), BuySellSide(1_000, 2))
+    assert bs.bs_score == pytest.approx(0.5 * 0.4)  # ratio 0.5 x size 4k/10k
+
+
+def test_min_gross_override_and_disable():
+    s = build_sm_signal(SmFlow(40, 40, 0, None), None, None, min_gross_usd=0)
+    assert s.flow_score == pytest.approx(1.0) and not s.small_volume
+    s2 = build_sm_signal(SmFlow(500, 500, 0, None), None, None, min_gross_usd=1_000)
+    assert s2.flow_score == pytest.approx(0.5)
+
+
+def test_tanh_fallback_small_net_flags_small_volume():
+    s = build_sm_signal(SmFlow(500, None, None, None), None, None)
+    assert s.flow_score == pytest.approx(math.tanh(500 / 1e5)) and s.small_volume
+
+
+def test_small_volume_downgrades_confidence():
+    s = build_sm_signal(SmFlow(8_000, 8_000, 0, 20), BuySellSide(8_000, 5), BuySellSide(0, 0))
+    assert s.score == pytest.approx(0.8) and s.small_volume
+    v = decide(TOK, "1d", s, signal_from_value(15))
+    assert v.kind == "CONTRARIAN_BULLISH"
+    assert ("small_volume", {}) in v.reasons and v.confidence == "Medium"
