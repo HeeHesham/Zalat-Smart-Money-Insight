@@ -1,0 +1,7 @@
+# Who Bought PEPE (last 1D)
+
+| Address | Label | Bought Volume USD | Tokens Bought |
+|:--------|:------|------------------:|--------------:|
+| [0xabc...](https://app.nansen.ai/profiler?address=0xabc) | 30D Smart Trader | $400.0k | 100000000000 |
+| 0xdef... | Fund | 350k | 90000000000 |
+| 0x123... | 90D Smart Trader | 50,000 | 1200000000 |

@@ -1,0 +1,11 @@
+# Token Recent Flows Summary
+
+**Token**: PEPE (ethereum)
+**Lookback**: 1d
+
+| Segment        | Inflow USD | Outflow USD | Net Flow USD | Wallets |
+|:---------------|-----------:|------------:|-------------:|--------:|
+| Smart Money    | $1.5M      | $300.0k     | +$1.2M       | 12      |
+| Whales         | 4.1M       | 5.0M        | -900k        | 40      |
+| Exchanges      | 10.2M      | 8.1M        | 2.1M         | 5       |
+| Fresh Wallets  | 120k       | 30k         | 90k          | 300     |

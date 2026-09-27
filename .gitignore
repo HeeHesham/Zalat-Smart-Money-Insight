@@ -1,0 +1,33 @@
+# Secrets - NEVER commit your real key
+.env
+.env.*
+!.env.example
+
+# Stress-test output (may contain raw API responses)
+reports/
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# HTML verdict cards (python -m zalat ... --html)
+cards/

@@ -1,0 +1,6 @@
+# Who Bought/Sold PEPE (last 1D)
+
+| Address | Label | Bought Token Volume | Sold Token Volume |
+|:--------|:------|--------------------:|------------------:|
+| 0xaaa... | Fund | 90000000000 | 1000000 |
+| 0xbbb... | 30D Smart Trader | 12000000000 | 5000000 |
