@@ -415,27 +415,53 @@ def test_verdict_crowd_alias():
 
 
 # ======================= Sprint 3: REST flow shape ======================================
-def test_estimated_gross_flow_score():
-    f = SmFlow(-1524.38, None, None, 12, {}, 6842.44)
-    s = build_sm_signal(f, None, None)
-    gross = 6842.44 * 12
-    assert s.gross_estimated and s.flow_score == pytest.approx(-1524.38 / gross)
-    assert s.wallets == 12 and not s.small_volume
+def test_flow_scaled_by_smart_buy_sell_volume():
+    # REST: no in/out split -> gross = smart bought + sold (who-bought-sold union).
+    f = SmFlow(-142_508, None, None, 53, {}, 218_452)   # avg is NOT used
+    s = build_sm_signal(f, BuySellSide(700, 6), BuySellSide(145_000, 6))
+    assert s.flow_basis == "buy_sell"
+    assert s.flow_score == pytest.approx(-142_508 / 145_700)
+    assert s.label == "Distributing" and s.wallets == 53
 
 
-def test_estimated_gross_is_clamped_and_damped():
-    big = build_sm_signal(SmFlow(50_000, None, None, 2, {}, 1_000), None, None)  # gross 2k
-    assert big.flow_score == pytest.approx(1.0 * 2_000 / MIN_GROSS_USD) and big.small_volume
+def test_flow_vs_buy_sell_is_clamped_and_damped():
+    s = build_sm_signal(SmFlow(50_000, None, None, 2, {}, 1_000), BuySellSide(1_500, 1),
+                        BuySellSide(500, 1))  # gross 2k < 10k minimum
+    assert s.flow_score == pytest.approx(1.0 * 2_000 / MIN_GROSS_USD) and s.small_volume
 
 
-def test_no_avg_falls_back_to_tanh():
-    s = build_sm_signal(SmFlow(2e5, None, None, 5, {}, None), None, None)
-    assert s.flow_score == pytest.approx(math.tanh(2.0)) and not s.gross_estimated
+def test_flow_tanh_scaled_by_24h_volume():
+    # LINK 7d (real): net -117.7k, no smart buys/sells, 24h volume $6.48M
+    f = SmFlow(-117_658.9, None, None, 4, {}, 26_950.6)
+    s = build_sm_signal(f, BuySellSide(0, 0), BuySellSide(0, 0), volume_24h=6_478_359)
+    assert s.flow_basis == "volume"
+    assert s.flow_score == pytest.approx(math.tanh(-117_658.9 / (0.02 * 6_478_359)))
+    # small token: scale never below the minimum size
+    tiny = build_sm_signal(SmFlow(5_000, None, None, 3, {}, None), None, None, volume_24h=1_000)
+    assert tiny.flow_score == pytest.approx(math.tanh(5_000 / MIN_GROSS_USD))
+
+
+def test_flow_tanh_fixed_scale_without_volume():
+    s = build_sm_signal(SmFlow(2e5, None, None, 5, {}, 9e9), None, None)
+    assert s.flow_score == pytest.approx(math.tanh(2.0)) and s.flow_basis == "fixed"
+
+
+def test_empty_flow_is_unavailable_not_zero():
+    empty = SmFlow(0.0, None, None, 0, {}, None)
+    s = build_sm_signal(empty, BuySellSide(8_000, 2), BuySellSide(2_000, 2))
+    assert s.flow_score is None and s.flow_basis is None
+    assert ("no_sm_flow", {}) in s.unavailable_reasons
+    assert s.score == pytest.approx(s.bs_score)  # buy/sell part is not diluted
+    both_empty = build_sm_signal(empty, BuySellSide(0, 0), BuySellSide(0, 0))
+    assert both_empty.label == "Unavailable"
+    # net 0 but wallets present is a real (neutral) reading
+    assert build_sm_signal(SmFlow(0.0, None, None, 3, {}), None, None).flow_score == 0.0
 
 
 def test_top_pnl_is_context_only():
     tp = SmFlow(-6.6e6, None, None, 78, {}, 1.5e6)
     a = build_sm_signal(SmFlow(1e5, None, None, 10, {}, 2e4), None, None, top_pnl=tp)
+    assert a.flow_basis == "fixed"
     b = build_sm_signal(SmFlow(1e5, None, None, 10, {}, 2e4), None, None)
     assert a.top_pnl is tp and a.score == b.score
 
@@ -445,6 +471,8 @@ def test_price_context_ohlcv_priority_and_market():
     p = build_price_context(tok, (None, 7.0), None, (4.37e-06, -0.1),
                             {"market_cap_usd": 1.8e9, "liquidity_usd": 1.7e7, "holders": 409302})
     assert (p.price_usd, p.change_pct, p.source, p.direction) == (4.4e-06, -0.1, "nansen_ohlcv", "Flat")
+    assert p.window == "prev_close"
+    assert build_price_context(tok, (None, 7.0), None).window == "24h"
     assert (p.market_cap_usd, p.liquidity_usd, p.holders) == (1.8e9, 1.7e7, 409302)
     only_ohlcv = build_price_context(TokenRef("X", "", "0x2", "ethereum"), None, None, (2.0, 5.0))
     assert only_ohlcv.price_usd == 2.0 and only_ohlcv.direction == "Rising"

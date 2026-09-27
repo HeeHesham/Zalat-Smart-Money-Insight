@@ -36,6 +36,7 @@ def test_fmt():
     assert fmt_usd(2.5e9) == "$2.5B"
     assert fmt_usd(12) == "$12"
     assert fmt_usd(0.5) == "$0.50"
+    assert fmt_usd(0) == fmt_usd(0.0) == "$0"
     assert fmt_usd(None) == "n/a"
     assert fmt_score(0.4211) == "+0.42" and fmt_score(-0.1) == "-0.10" and fmt_score(None) == "n/a"
 
@@ -209,6 +210,7 @@ def test_fmt_price(x, out):
 
 def test_fmt_pct():
     assert (fmt_pct(3.24), fmt_pct(-12), fmt_pct(None)) == ("+3.2%", "-12.0%", "n/a")
+    assert fmt_pct(-0.0106) == fmt_pct(0.04) == fmt_pct(0) == "0.0%"
 
 
 def test_kind_text_by_source():
@@ -335,16 +337,39 @@ def test_arabic_short_names_depend_on_crowd_source():
 def test_rest_flow_lines_both_languages():
     sm = build_sm_signal(SmFlow(-1524.38, None, None, 12, {}, 6842.44), BuySellSide(2694, 6),
                          BuySellSide(145673, 6), top_pnl=SmFlow(-6.6e6, None, None, 78, {}, 1.5e6))
-    price = PriceContext(4.38e-06, -0.1, "24h", "nansen_ohlcv", "Flat", 1.838e9, 1.717e7, 409302)
+    price = PriceContext(4.38e-06, -0.1, "prev_close", "nansen_ohlcv", "Flat", 1.838e9, 1.717e7,
+                         409302)
     v = decide(TOK, "1d", sm, signal_from_value(70), None, price)
     en, ar = render_text(v, "en"), render_text(v, "ar")
-    assert "  - Net flow: -$1.5k (12 wallets, avg $6.8k per wallet, estimated gross $82.1k)" in en
+    assert "  - Net flow: -$1.5k (12 wallets, avg flow (Nansen) $6.8k)" in en
+    assert "per wallet" not in en and "estimated gross" not in en
     assert "  - Top PnL traders net flow (context, not scored): -$6.6M (78 wallets)" in en
-    assert "Price: $0.00000438 (-0.1% over 24h, source Nansen OHLCV)" in en
+    assert ("Price: $0.00000438 (-0.1% vs the previous daily close (UTC), source Nansen OHLCV)"
+            in en)
     assert "Market context: market cap $1.8B, liquidity $17.2M, holders 409,302" in en
-    assert "إجمالي تقديري $82.1k" in ar and "12 محفظة" in ar
+    assert "متوسط التدفق (Nansen) $6.8k" in ar and "12 محفظة" in ar
+    assert "إجمالي تقديري" not in ar and "مقارنة بإغلاق اليوم السابق (UTC)" in ar
     assert "أعلى المتداولين ربحاً" in ar and "عدد الحاملين 409,302" in ar
     assert "in n/a" not in en
+
+
+def test_empty_flow_and_zero_volume_rendering():
+    sm = build_sm_signal(SmFlow(0.0, None, None, 0, {}, None), BuySellSide(0, 0), BuySellSide(0, 0))
+    v = decide(TOK, "1d", sm, signal_from_value(70))
+    en, ar = render_text(v, "en"), render_text(v, "ar")
+    assert "  - Net flow: no smart-money flow in this period" in en
+    assert "  - Smart buyers vs sellers: $0 bought / $0 sold (score n/a)" in en
+    assert "$0.00" not in en
+    assert "لا يوجد تدفق للأموال الذكية في هذه الفترة" in ar
+    assert v.kind == "INSUFFICIENT_DATA"
+
+
+def test_wbs_truncated_note():
+    sm = build_sm_signal(SmFlow(1e5, None, None, 5, {}), BuySellSide(8e5, 400), BuySellSide(2e5, 400),
+                         wbs_truncated=True)
+    v = decide(TOK, "1d", sm, signal_from_value(70))
+    assert "cut at the top 400 wallets per side" in render_text(v, "en")
+    assert "أعلى 400 محفظة" in render_text(v, "ar")
 
 
 def test_net_only_flow_line():

@@ -20,9 +20,9 @@ context**, and prints a **verdict in English and Arabic**.
 | Purpose | Endpoint | Used for |
 |---|---|---|
 | Find the token | `search/general` | contract address, live price, 24h volume |
-| Smart-money flow | `tgm/flow-intelligence` | `smart_trader_*` net flow, average flow per wallet, wallet count (scored); `top_pnl_*` (context only) |
-| Who bought / sold | `tgm/who-bought-sold` (BUY and SELL) | USD bought and sold by Smart Trader / Fund wallets |
-| Price change | `tgm/token-ohlcv` | 24h change = last daily close vs previous close |
+| Smart-money flow | `tgm/flow-intelligence` | `smart_trader_*` net flow and wallet count (scored), Nansen's `avg_flow` (shown only); `top_pnl_*` (context only) |
+| Who bought / sold | `tgm/who-bought-sold` (BUY and SELL) | USD bought and sold by Smart Trader / Fund wallets (100 per page, up to 4 pages per side) |
+| Price change | `tgm/token-ohlcv` | latest close vs the previous daily close (UTC) |
 | Market context | `tgm/token-information` | market cap, liquidity, holders (display only) |
 
 Set `ZALAT_NANSEN_BACKEND=mcp` to use Nansen's **MCP server** (`https://mcp.nansen.ai/ra/mcp/`) instead. MCP needs a real
@@ -138,8 +138,8 @@ pip install -r requirements.txt
 
 **REST backend (default): the key is optional.** If `NANSEN_API_KEY` is not set, the tool sends **no** key header at
 all. This supports setups where a proxy or gateway injects the credential for `api.nansen.ai`. If Nansen then answers
-HTTP 401/403, the tool stops with exit code 4 and the message *"Nansen rejected the request: set NANSEN_API_KEY in
-.env"*. **MCP backend: the key is required.**
+HTTP 401/403, the tool stops with exit code 4 and the message *"Nansen rejected the request (HTTP 401, request_id …):
+check NANSEN_API_KEY in .env (missing or invalid)"*. **MCP backend: the key is required.**
 
 To use your own key:
 
@@ -173,7 +173,7 @@ variable wins:
 Every REST call records Nansen's `X-Request-Id` (or the `request_id` from an error body), the HTTP status, the credits
 used and remaining, and the remaining rate limit. You can see them in two places:
 
-- with `--raw`: `=== token_ohlcv ok=True http=200 request_id=17660b… credits_cost=1 credits_remaining=28080 ===`
+- with `--raw`: `=== token_ohlcv ok=True http=200 request_id=17660b… credits_cost=1 credits_remaining=28080 (432 ms) ===`
 - with `-v`: one log line per call
 
 The stress report lists them for every call. On HTTP 429 the tool waits as told by `Retry-After` / `Ratelimit-Reset`
@@ -245,42 +245,40 @@ LunarCrush, Fear & Greed and `token_info` problems never change the exit code. T
 
 ## Sample output
 
-**Real output** from a live run on 2026-09-27: `python -m zalat PEPE` with the REST backend, no LunarCrush key, English
-part only. Real Nansen and Fear & Greed data at that moment, not a prediction:
+**Real output** from a live run on 2026-09-27: `python -m zalat LINK --period 7d` with the REST backend, no LunarCrush
+key, English part only. Real Nansen and Fear & Greed data at that moment, not a prediction:
 
 ```text
 Zalat Smart Money Verdict
-Token: PEPE (Pepe) on ethereum, lookback 1d
-Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933
+>>> DISAGREEMENT: SMART MONEY vs OVERALL MARKET MOOD <<<
+Token: LINK (ChainLink Token) on ethereum, lookback 7d
+Address: 0x514910771af9ca656af840dff83e8264ecf986ca
 ------------------------------------------------------------
-VERDICT: No clear divergence between smart money and the overall market mood  [Neutral]
-Either smart money or the market-wide mood has no strong direction.
-Disagreement: no
+VERDICT: Smart money is selling while the overall crypto market is greedy (market-wide mood, not this token)  [Warning (Bearish)]
+The whole crypto market is greedy while smart-money wallets distribute this token. The mood describes the market, not this token's own crowd.
+Disagreement: YES - smart money and the overall market mood point in opposite directions.
 
-Smart money: Neutral (weak), score -0.02
-  - Net flow: -$1.5k (12 wallets, avg $6.8k per wallet, estimated gross $82.1k)
-  - Smart buyers vs sellers: $0.00 bought / $0.00 sold (score n/a)
-  - Top PnL traders net flow (context, not scored): -$165.3k (17 wallets)
-Price: $0.000004417 (-0.1% over 24h, source Nansen OHLCV)
-Market context: market cap $1.8B, liquidity $17.1M, holders 409,320
-Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Greed (70/100) - alternative.me Fear & Greed
-Divergence score: +0.01 (positive = smart money leans against the overall market mood)
+Smart money: Distributing (strong), score -0.81
+  - Net flow: -$117.7k (4 wallets, avg flow (Nansen) $27.0k)
+  - Smart buyers vs sellers: $13.6k bought / $132.0k sold (score -0.81)
+  - Top PnL traders net flow (context, not scored): -$6.6M (67 wallets)
+Price: $14.07 (0.0% vs the previous daily close (UTC), source Nansen OHLCV)
+Market context: market cap $10.5B, liquidity $20.4M, holders 642,713
+Market-wide mood (whole crypto market, BTC-centric; NOT specific to LINK (ChainLink Token)): Greed (70/100) - alternative.me Fear & Greed
+Divergence score: +0.32 (positive = smart money leans against the overall market mood)
 
-Confidence: Low
+Confidence: Medium
 Why:
-  - no smart-money buys or sells in this period
-  - only one of the two smart-money signals was available
   - only the market-wide mood was available, not this token's own crowd (capped at Medium)
-  - smart-money signal is weak (strength 0.02, below 0.40)
 
-Mild lean: smart money slightly negative.
 Token social sentiment: not configured - needs a paid LunarCrush API plan (set LUNARCRUSH_API_KEY). Future work; this verdict compares smart money with market-wide mood instead.
 
 Not financial advice. For research and education only.
 ```
 
-On that day no labelled smart-money wallet traded PEPE in the last 24h (both BUY and SELL lists were empty), so only
-the flow signal was available and confidence is Low. The two samples below are **illustrative only**. Their numbers
+Here smart wallets sold far more LINK than they bought over 7 days. The Smart Trader net flow (-$117.7k) is compared
+with their own bought + sold volume ($145.6k), and the market-wide mood was Greed. The result is a Warning (Bearish),
+capped at Medium confidence because no token-specific crowd signal was configured. The two samples below are **illustrative only**. Their numbers
 are made up to show the other verdict formats, and are not real market data.
 
 **(a) Default: no LunarCrush key.** The crowd is the market-wide mood, and the output says so:
@@ -386,7 +384,8 @@ The tool makes these Nansen calls. With the default REST backend they go to the 
 3. `token_who_bought_sold` (BUY and SELL): wallets labelled *30D / 90D / 180D Smart Trader*, *Smart Trader* and *Fund*
    that traded at least $10. The two lists are **merged by wallet address**, because each row carries both bought and
    sold USD. Any period up to `1d` uses the last 24 hours, and `7d` uses the last 7 days.
-4. `token_ohlcv`: daily candles; 24h change = last close vs previous close.
+4. `token_ohlcv`: daily candles. The price change is the latest close (the current UTC day, still open) vs the
+   previous daily close, and the output labels it "vs the previous daily close (UTC)".
 5. `token_info`: market cap, liquidity and holders, shown for context. If this or `token_ohlcv` fails, nothing else is
    affected.
 
@@ -395,11 +394,16 @@ LunarCrush data. Both run at the same time as the Nansen calls.
 
 ### 1. Smart-money score `s` (-1 to +1). This alone sets the direction
 
-- `flow_score = net_flow / gross_flow`, clamped to -1…+1: the share of smart-money volume that was net buying.
-  - Gross flow is inflow + outflow when Nansen reports them (MCP tables).
-  - The REST API only gives net flow, **average flow per wallet** and **wallet count**. So gross is **estimated** as
-    `avg_flow × wallet_count`, and the output says "estimated gross".
-  - If neither is available, the tool uses `tanh(net_flow / $100k)`.
+- `flow_score` is the Smart Trader net flow, scaled by the first rule that applies:
+  1. inflow and outflow known (MCP tables): `net / (inflow + outflow)`.
+  2. otherwise, if smart wallets bought or sold anything in who-bought-sold: `net / (bought + sold)`, clamped to -1…+1.
+     The REST flow endpoint has no inflow/outflow split, so the smart wallets' own traded USD is the gross.
+  3. otherwise: `tanh(net / scale)`, where scale = max($10,000, 2% of the token's 24h volume) when the search returned
+     a volume, else $100k.
+  - Nansen's `avg_flow` is shown as "avg flow (Nansen)" for context only. Its meaning isn't documented (it can be
+    non-zero with 0 wallets), so it is **not** used in the maths.
+  - An **empty** flow (net $0 and 0 wallets) counts as *unavailable* ("no smart-money flow in this period"), not as a
+    neutral 0, so it doesn't water down the buy/sell part.
 - `buy_sell_score = (bought - sold) / (bought + sold)`, using **USD** volume only, summed once per unique wallet across
   the BUY and SELL lists. Columns in native token units are
   never added up as dollars. If there is no USD column, this part is marked unavailable.
@@ -440,7 +444,8 @@ LunarCrush data. Both run at the same time as the Nansen calls.
 
 The tool takes the price from the Nansen search, then from `token_info`, then from the last OHLCV close, then from
 LunarCrush. The 24h change comes from **Nansen OHLCV** (last daily close vs the previous close), then `token_info`,
-then LunarCrush. The last daily candle is usually the current, still-open day. A change of +3% or more is **Rising**, -3% or less is **Falling**, and anything
+then LunarCrush. The last daily candle is the current UTC day and is still open, so the change is labelled "vs the
+previous daily close (UTC)". A change of +3% or more is **Rising**, -3% or less is **Falling**, and anything
 else is Flat. The tool then adds one of these notes:
 
 | Smart money | Price Falling | Price Rising |
@@ -560,7 +565,7 @@ Nansen stress test (rest) - completed
 | Problem | What to do |
 |---|---|
 | `NANSEN_API_KEY is not set` (exit 2) | Create `.env` from `.env.example` and paste your key, or export `NANSEN_API_KEY`. |
-| `Nansen rejected the request: set NANSEN_API_KEY in .env` (exit 4, REST) | No key was sent (or it was wrong) and Nansen answered 401/403. Put your key in `.env`. The message includes the `request_id`. |
+| `Nansen rejected the request (HTTP 401, request_id …): check NANSEN_API_KEY in .env (missing or invalid)` (exit 4, REST) | No key was sent (or it was wrong) and Nansen answered 401/403. Put a valid key in `.env`, and quote the `request_id` to Nansen support if it persists. |
 | `Nansen rejected the API key` (exit 4, MCP) | Check the key for typos and extra spaces, and confirm it is active and has API/MCP access in your Nansen account. If Nansen changed the header name, set `NANSEN_API_KEY_HEADER` in `.env`. |
 | MCP data tools fail with "401 Invalid API key" | The MCP server forwards your key to the REST API. Use a real key, or switch back to the default REST backend. |
 | `Nansen unreachable` (exit 5) | Check your internet connection, VPN, proxy or firewall. If Nansen moved the endpoint, set `NANSEN_API_URL` (REST) or `NANSEN_MCP_URL` (MCP) in `.env`. Try `--timeout 60`. |
@@ -609,10 +614,11 @@ LUNARCRUSH_URL=https://lunarcrush.com/api4      # LunarCrush API base (default s
 - The exact response formats of Nansen's data tools are not publicly documented, so the parsers are deliberately
   forgiving. If a format is not recognised, that signal shows as *unavailable* rather than a wrong number. Please
   share `--raw` output if this happens.
-- **Flow gross is estimated on REST.** `tgm/flow-intelligence` has no inflow/outflow split, so the flow score uses
-  gross ≈ average flow per wallet × wallet count.
-- **Who-bought-sold is the top 25 wallets per side** (one page, trades of at least $10). Very active tokens may have
-  more smart wallets than that.
+- **No inflow/outflow split on REST.** `tgm/flow-intelligence` gives only net flow, so the flow part is scaled by the
+  smart wallets' own bought + sold USD, or by 2% of 24h volume when they didn't trade. The 24h volume is not adjusted
+  for `--period 7d`, so 7-day flows can look stronger than 1-day ones.
+- **Who-bought-sold is capped at 400 wallets per side**: 100 per page, up to 4 pages, trades of at least $10, and
+  each extra page costs a credit. If more remain, the output adds a note that the lists were cut.
 - It analyses one token per run. There is no caching, history, backtesting, alerts or charts.
 - The thresholds and weights are simple heuristics, not a validated trading model.
 

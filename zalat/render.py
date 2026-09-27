@@ -92,16 +92,18 @@ def _block(v: Verdict, lang: Lang) -> str:
         lines.append(t("sm_line", lang, label=label(sm.label, lang), strength=strength,
                        score=fmt_score(sm.score)))
     f = sm.flow
-    if f is not None and f.net_usd is not None:
+    if f is not None and f.is_empty:
+        lines.append(t("flow_empty", lang))
+    elif f is not None and f.net_usd is not None:
         net = _signed_usd(f.net_usd)
         if f.inflow_usd is not None or f.outflow_usd is not None:
             wallets = (t("wallets_part", lang, wallets=fmt_wallets(f.wallets, lang))
                        if f.wallets is not None else "")
             lines.append(t("flow_line", lang, net=net, inflow=fmt_usd(f.inflow_usd),
                            outflow=fmt_usd(f.outflow_usd), wallets=wallets))
-        elif f.estimated_gross_usd is not None:
-            lines.append(t("flow_line_est", lang, net=net, wallets=fmt_wallets(f.wallets, lang),
-                           avg=fmt_usd(f.avg_usd), gross=fmt_usd(f.estimated_gross_usd)))
+        elif f.avg_usd is not None:
+            lines.append(t("flow_line_avg", lang, net=net,
+                           wallets=fmt_wallets(f.wallets or 0, lang), avg=fmt_usd(f.avg_usd)))
         else:
             lines.append(t("flow_line_net", lang, net=net, wallets=_wallets_paren(f, lang)))
     else:
@@ -148,9 +150,12 @@ def _block(v: Verdict, lang: Lang) -> str:
     if v.reasons:
         lines.append(t("why", lang))
         lines.extend(f"  - {t(key, lang, **params)}" for key, params in v.reasons)
-    if v.notes:
+    notes = list(v.notes)
+    if sm.wbs_truncated:
+        notes.append(("wbs_truncated", {}))
+    if notes:
         lines.append("")
-        lines.extend(t(key, lang, **params) for key, params in v.notes)
+        lines.extend(t(key, lang, **params) for key, params in notes)
     lines.append("")
     lines.append(DISCLAIMER[lang])
     return "\n".join(lines)

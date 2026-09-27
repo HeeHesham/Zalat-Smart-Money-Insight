@@ -34,7 +34,7 @@ from zalat.nansen_mcp import (
     get_who_bought_sold,
     resolve_token,
 )
-from zalat.nansen_rest import AUTH_MESSAGE as REST_AUTH_MESSAGE
+from zalat.nansen_rest import auth_message as rest_auth_message
 from zalat.nansen_rest import make_client
 from zalat.parsing import (
     extract_buy_sell,
@@ -43,6 +43,7 @@ from zalat.parsing import (
     extract_sm_flow,
     extract_token_market,
     extract_top_pnl_flow,
+    is_truncated,
 )
 from zalat.render import render_json, render_text
 from zalat.verdict import build_price_context, build_sm_signal, decide
@@ -184,6 +185,7 @@ async def run(
         token = TokenRef(symbol=sym, name="", address=addr, chain=chain)
 
     flow = buy = sell = top_pnl = None
+    truncated = False
     ires: ToolResult | None = None
     ores: ToolResult | None = None
     try:
@@ -196,7 +198,8 @@ async def run(
                 if token is None:
                     _cancel(market_task, social_task)
                     if not res.ok and res.error_kind == "auth":
-                        msg = REST_AUTH_MESSAGE if settings.backend == "rest" else auth_message()
+                        msg = (rest_auth_message(res.http_status, res.request_id)
+                               if settings.backend == "rest" else auth_message())
                         _err(f"Error: {msg}", settings)
                         return EXIT_AUTH, ""
                     if not res.ok:
@@ -228,6 +231,7 @@ async def run(
             # BUY and SELL lists are merged by wallet (REST rows carry both sides).
             buy, sell = extract_buy_sell(bres.text if bres.ok else None,
                                          sres.text if sres.ok else None)
+            truncated = is_truncated(bres.text) or is_truncated(sres.text)
     except NansenAuthError as exc:
         _cancel(market_task, social_task)
         _err(f"Error: {exc}", settings)
@@ -251,7 +255,8 @@ async def run(
     market_ctx = extract_token_market(ires.text) if ires is not None and ires.ok else None
     ohlcv = extract_ohlcv_change(ores.text) if ores is not None and ores.ok else None
     price = build_price_context(token, info, social, ohlcv, market_ctx)
-    sm = build_sm_signal(flow, buy, sell, min_gross_usd=settings.min_gross_usd, top_pnl=top_pnl)
+    sm = build_sm_signal(flow, buy, sell, min_gross_usd=settings.min_gross_usd, top_pnl=top_pnl,
+                         volume_24h=token.volume_24h, wbs_truncated=truncated)
     verdict = decide(token, args.period, sm, market, social, price)
     out = render_json(verdict) if args.json else render_text(verdict, args.lang)
     return EXIT_OK, redact(out, settings.secrets())

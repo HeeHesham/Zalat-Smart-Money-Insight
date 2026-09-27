@@ -174,7 +174,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "sm_unavailable": "Smart money: Unavailable",
         "flow_line": "  - Net flow: {net} (in {inflow} / out {outflow}{wallets})",
         "flow_na": "  - Net flow: unavailable",
-        "flow_line_est": "  - Net flow: {net} ({wallets}, avg {avg} per wallet, estimated gross {gross})",
+        "flow_line_avg": "  - Net flow: {net} ({wallets}, avg flow (Nansen) {avg})",
+        "flow_empty": "  - Net flow: no smart-money flow in this period",
+        "wbs_truncated": "Note: buyer/seller lists were cut at the top 400 wallets per side.",
         "flow_line_net": "  - Net flow: {net}{wallets}",
         "wallets_paren": " ({wallets})",
         "top_pnl_line": "  - Top PnL traders net flow (context, not scored): {net}{wallets}",
@@ -182,7 +184,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "wallets_part": ", {wallets}",
         "bs_line": "  - Smart buyers vs sellers: {buy} bought / {sell} sold (score {score})",
         "bs_na": "  - Smart buyers vs sellers: unavailable",
-        "price_line": "Price: {price} ({change} over {window}, source {source})",
+        "price_line": "Price: {price} ({change} {window}, source {source})",
         "price_line_no_change": "Price: {price} (24h change unavailable)",
         "source_nansen_token_info": "Nansen token_info",
         "source_lunarcrush": "LunarCrush",
@@ -198,6 +200,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "flow_unavailable": "smart-money flow data unavailable",
         "bs_unavailable": "smart buyer/seller data unavailable",
         "no_sm_trades": "no smart-money buys or sells in this period",
+        "no_sm_flow": "no smart-money flow in this period",
         "crowd_unavailable": "no crowd signal: token social and market-wide mood both unavailable",
         "one_sm_part": "only one of the two smart-money signals was available",
         "weak_signal": "smart-money signal is weak (strength {s}, below 0.40)",
@@ -207,11 +210,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "crowd_neutral": "market-wide mood is near neutral (45-55)",
         "social_neutral": "token social sentiment is mixed (41-60% positive)",
         "crowd_market_wide": "only the market-wide mood was available, not this token's own crowd (capped at Medium)",
-        "price_volatile": "price moved 20% or more in 24h (volatile)",
+        "price_volatile": "price moved 20% or more (volatile)",
         # notes
         "crowded_trade": "Note: extreme optimism about this token - this may be a crowded trade.",
         "crowded_trade_market": "Note: the whole crypto market is in Extreme Greed (market-wide) - trades may be crowded.",
-        "window_24h": "24h",
+        "window_24h": "over 24h",
+        "window_prev_close": "vs the previous daily close (UTC)",
         "capitulation": "Note: both sides bearish - can indicate capitulation.",
         "lean_positive": "Mild lean: smart money slightly positive.",
         "lean_negative": "Mild lean: smart money slightly negative.",
@@ -245,7 +249,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "sm_unavailable": "الأموال الذكية: غير متاح",
         "flow_line": "  - صافي التدفق: {net} (وارد {inflow} / صادر {outflow}{wallets})",
         "flow_na": "  - صافي التدفق: غير متاح",
-        "flow_line_est": "  - صافي التدفق: {net} ({wallets}، متوسط {avg} لكل محفظة، إجمالي تقديري {gross})",
+        "flow_line_avg": "  - صافي التدفق: {net} ({wallets}، متوسط التدفق (Nansen) {avg})",
+        "flow_empty": "  - صافي التدفق: لا يوجد تدفق للأموال الذكية في هذه الفترة",
+        "wbs_truncated": "ملاحظة: قوائم المشترين/البائعين اقتُطعت عند أعلى 400 محفظة لكل جانب.",
         "flow_line_net": "  - صافي التدفق: {net}{wallets}",
         "wallets_paren": " ({wallets})",
         "top_pnl_line": "  - صافي تدفق أعلى المتداولين ربحاً (للسياق، غير محتسب): {net}{wallets}",
@@ -253,7 +259,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "wallets_part": "، {wallets}",
         "bs_line": "  - المشترون مقابل البائعين الأذكياء: شراء {buy} / بيع {sell} (الدرجة {score})",
         "bs_na": "  - المشترون مقابل البائعين الأذكياء: غير متاح",
-        "price_line": "السعر: {price} ({change} خلال {window}، المصدر {source})",
+        "price_line": "السعر: {price} ({change} {window}، المصدر {source})",
         "price_line_no_change": "السعر: {price} (تغيّر 24 ساعة غير متاح)",
         "source_nansen_token_info": "Nansen token_info",
         "source_lunarcrush": "LunarCrush",
@@ -268,6 +274,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "flow_unavailable": "بيانات تدفق الأموال الذكية غير متاحة",
         "bs_unavailable": "بيانات المشترين/البائعين الأذكياء غير متاحة",
         "no_sm_trades": "لا توجد عمليات شراء أو بيع من الأموال الذكية في هذه الفترة",
+        "no_sm_flow": "لا يوجد تدفق للأموال الذكية في هذه الفترة",
         "crowd_unavailable": "لا توجد إشارة للجمهور: المشاعر الاجتماعية للعملة ومزاج السوق العام غير متاحين",
         "one_sm_part": "توفرت إشارة واحدة فقط من إشارتي الأموال الذكية",
         "weak_signal": "إشارة الأموال الذكية ضعيفة (قوتها {s}، أقل من 0.40)",
@@ -277,10 +284,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "crowd_neutral": "مزاج السوق العام قريب من المحايد (45-55)",
         "social_neutral": "المشاعر الاجتماعية تجاه العملة متباينة (41-60% إيجابية)",
         "crowd_market_wide": "توفر مزاج السوق العام فقط وليس جمهور هذه العملة (الحد الأقصى: متوسطة)",
-        "price_volatile": "تحرك السعر 20% أو أكثر خلال 24 ساعة (تقلب مرتفع)",
+        "price_volatile": "تحرك السعر 20% أو أكثر (تقلب مرتفع)",
         "crowded_trade": "ملاحظة: تفاؤل مفرط تجاه هذه العملة - قد تكون صفقة مزدحمة.",
         "crowded_trade_market": "ملاحظة: سوق الكريبتو بأكمله في حالة طمع شديد (مزاج السوق العام) - قد تكون الصفقات مزدحمة.",
-        "window_24h": "24 ساعة",
+        "window_24h": "خلال 24 ساعة",
+        "window_prev_close": "مقارنة بإغلاق اليوم السابق (UTC)",
         "capitulation": "ملاحظة: الطرفان متشائمان - قد يدل ذلك على استسلام البائعين.",
         "lean_positive": "ميل طفيف: الأموال الذكية إيجابية قليلاً.",
         "lean_negative": "ميل طفيف: الأموال الذكية سلبية قليلاً.",
@@ -309,6 +317,8 @@ def fmt_usd(x: float | None) -> str:
     """Compact signed USD: 1_234_567 -> "$1.2M", -3400 -> "-$3.4k"; None -> "n/a"."""
     if x is None:
         return "n/a"
+    if x == 0:
+        return "$0"
     sign = "-" if x < 0 else ""
     a = abs(x)
     for div, suf in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "k")):
@@ -360,7 +370,11 @@ def fmt_price(x: float | None) -> str:
 
 def fmt_pct(x: float | None) -> str:
     """Signed percent with one decimal: "+3.2%", "-12.0%"; None -> "n/a"."""
-    return "n/a" if x is None else f"{x:+.1f}%"
+    if x is None:
+        return "n/a"
+    if round(x, 1) == 0:
+        return "0.0%"  # avoid "-0.0%" / "+0.0%" for tiny moves
+    return f"{x:+.1f}%"
 
 
 def fmt_score(x: float | None) -> str:

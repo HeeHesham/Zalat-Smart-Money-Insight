@@ -56,7 +56,22 @@ MIN_TRADE_USD = 10
 MAX_429_RETRIES = 3
 MAX_RETRY_WAIT_S = 30.0
 
-AUTH_MESSAGE = "Nansen rejected the request: set NANSEN_API_KEY in .env"
+#: who-bought-sold paging: up to MAX_WBS_PAGES pages of WBS_PER_PAGE wallets per
+#: side. Each extra page costs a credit; if more remain the reply is marked
+#: "truncated" and the verdict says so.
+WBS_PER_PAGE = 100
+MAX_WBS_PAGES = 4
+
+
+def auth_message(status: int | None = None, request_id: str | None = None) -> str:
+    """Message for a REST 401/403 (exit code 4)."""
+    meta = ", ".join(x for x in (f"HTTP {status}" if status else "",
+                                 f"request_id {request_id}" if request_id else "") if x)
+    where = f" ({meta})" if meta else ""
+    return f"Nansen rejected the request{where}: check NANSEN_API_KEY in .env (missing or invalid)"
+
+
+AUTH_MESSAGE = auth_message()
 
 
 def _date_window(time_range: dict | None, now: datetime | None = None) -> dict[str, str]:
@@ -89,7 +104,7 @@ def rest_request(tool: str, arguments: dict, now: datetime | None = None) -> tup
             "filters": {"include_smart_money_labels": list(REST_SMART_LABELS),
                         "trade_volume_usd": {"min": MIN_TRADE_USD}},
             "order_by": [{"field": "token_trade_volume", "direction": "DESC"}],
-            "pagination": {"page": 1, "per_page": 25},
+            "pagination": {"page": 1, "per_page": WBS_PER_PAGE},
         }
     # token_info / token_ohlcv
     return path, {"chain": req["chain"], "token_address": req["tokenAddress"],
@@ -150,16 +165,63 @@ class NansenRESTClient:
         return res
 
     async def call(self, tool: str, arguments: dict) -> ToolResult:
-        """Call one endpoint. Raises only :class:`NansenAuthError` (401/403)."""
+        """Call one endpoint. Raises only :class:`NansenAuthError` (401/403).
+
+        who-bought-sold is paged: up to :data:`MAX_WBS_PAGES` pages are fetched
+        and merged into one ``{"data": [...]}`` reply (see :meth:`_more_pages`).
+        """
         if self._http is None:
             raise RuntimeError("NansenRESTClient used outside 'async with'")
-        secrets = self.settings.secrets()
         try:
             path, body = rest_request(tool, arguments)
         except KeyError as exc:
             return ToolResult(tool, False, f"no REST endpoint for {tool} ({exc})", False,
                               "protocol", reason="unknown_tool")
+        res = await self._post(tool, path, body)
+        if tool == "token_who_bought_sold" and res.ok:
+            res = await self._more_pages(res, path, body)
+        return res
 
+    async def _more_pages(self, first: ToolResult, path: str, body: dict) -> ToolResult:
+        """Fetch further who-bought-sold pages while ``is_last_page`` is false."""
+        try:
+            payload = json.loads(first.text)
+            rows = list(payload["data"])
+            last = bool(payload.get("pagination", {}).get("is_last_page", True))
+        except (ValueError, KeyError, TypeError):
+            return first
+        if last:
+            return first  # the common case: keep Nansen's reply byte-for-byte
+        ids = [first.request_id]
+        costs = [first.credits_cost or 0.0]
+        latency, remaining, page = first.latency_ms, first.credits_remaining, 1
+        while not last and page < MAX_WBS_PAGES:
+            page += 1
+            nxt = dict(body, pagination={"page": page, "per_page": WBS_PER_PAGE})
+            r = await self._post(first.tool, path, nxt)
+            latency += r.latency_ms
+            ids.append(r.request_id)
+            if not r.ok:
+                break
+            costs.append(r.credits_cost or 0.0)
+            remaining = r.credits_remaining if r.credits_remaining is not None else remaining
+            try:
+                more = json.loads(r.text)
+                rows.extend(more["data"])
+                last = bool(more.get("pagination", {}).get("is_last_page", True))
+            except (ValueError, KeyError, TypeError):
+                break
+        merged = {"data": rows,
+                  "pagination": {"pages_fetched": page, "per_page": WBS_PER_PAGE,
+                                 "is_last_page": last},
+                  "truncated": not last, "request_ids": ids}
+        first.text = json.dumps(merged)
+        first.latency_ms, first.credits_cost, first.credits_remaining = latency, sum(costs), remaining
+        return first
+
+    async def _post(self, tool: str, path: str, body: dict) -> ToolResult:
+        """One POST with 429 retries; builds the ToolResult (raises on 401/403)."""
+        secrets = self.settings.secrets()
         start = time.perf_counter()
         retries = 0
         while True:
@@ -203,8 +265,7 @@ class NansenRESTClient:
         res.is_error = True
         res.reason = str(reason or f"http_{code}")
         if code in (401, 403):
-            rid = f", request_id {res.request_id}" if res.request_id else ""
-            raise NansenAuthError(f"{AUTH_MESSAGE} (HTTP {code}{rid})")
+            raise NansenAuthError(auth_message(code, res.request_id))
         if code == 429:
             res.error_kind = "rate_limited"
         elif code >= 500:

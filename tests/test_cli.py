@@ -152,7 +152,7 @@ def test_search_auth_tool_error_exit_4(key, capsys):
     code, _ = cli(["PEPE"], FakeNansenClient({"general_search": res}))
     err = capsys.readouterr().err
     assert code == 4
-    assert "Nansen rejected the request: set NANSEN_API_KEY in .env" in err  # REST default
+    assert "Nansen rejected the request: check NANSEN_API_KEY in .env (missing or invalid)" in err
     assert "Token search failed" not in err and "auth: auth" not in err
 
 
@@ -408,7 +408,7 @@ def test_price_change_prefers_ohlcv(key, capsys):
     code, _ = cli2(["PEPE", "--lang", "en"])
     out = capsys.readouterr().out
     # real OHLCV: last close 4.36928e-06 vs previous 4.37390e-06 -> -0.1%
-    assert "Price: $0.000004 (-0.1% over 24h, source Nansen OHLCV)" in out
+    assert "Price: $0.000004 (-0.1% vs the previous daily close (UTC), source Nansen OHLCV)" in out
     assert "e-06" not in out
 
 
@@ -457,7 +457,7 @@ def test_real_rest_payloads_end_to_end(capsys):
     assert code == 0
     assert "Token: PEPE (Pepe) on ethereum" in out
     assert "Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933" in out
-    assert "Net flow: -$1.5k (12 wallets, avg $6.8k per wallet, estimated gross $82.1k)" in out
+    assert "Net flow: -$1.5k (12 wallets, avg flow (Nansen) $6.8k)" in out
     assert "Smart buyers vs sellers: $2.7k bought / $145.7k sold" in out
     assert "Top PnL traders net flow (context, not scored): -$165.3k (17 wallets)" in out
     assert "source Nansen OHLCV" in out and "holders 409,302" in out
@@ -471,7 +471,9 @@ def test_real_rest_payloads_json(capsys):
     main(["PEPE", "--json", "--period", "7d"], client_factory=fake.factory,
          fng_fetcher=fng_const(70), env_file=None)
     data = json.loads(capsys.readouterr().out)
-    assert data["sm"]["gross_estimated"] is True and data["sm"]["wallets"] == 53
+    assert data["sm"]["flow_basis"] == "buy_sell" and data["sm"]["wallets"] == 53
+    assert data["sm"]["flow_score"] == pytest.approx(
+        -142508.33836082026 / (2694.2672884095823 + 145672.94049052984))
     assert data["sm"]["top_pnl"]["wallets"] == 78
     assert data["sm"]["buy"]["wallets"] == 6
     assert data["price"]["source"] == "nansen_ohlcv" and data["price"]["holders"] == 409302
@@ -497,12 +499,14 @@ def test_raw_and_verbose_show_request_ids(capsys):
 
 def test_rest_auth_error_exit_4_message(capsys):
     def boom(args):
-        raise NansenAuthError("Nansen rejected the request: set NANSEN_API_KEY in .env (HTTP 401)")
+        raise NansenAuthError("Nansen rejected the request (HTTP 401, request_id r1): "
+                              "check NANSEN_API_KEY in .env (missing or invalid)")
 
     fake = FakeNansenClient({"general_search": boom})
     code = main(["PEPE"], client_factory=fake.factory, fng_fetcher=fng_const(70), env_file=None)
     assert code == 4
-    assert "Nansen rejected the request: set NANSEN_API_KEY in .env" in capsys.readouterr().err
+    assert ("Nansen rejected the request (HTTP 401, request_id r1): check NANSEN_API_KEY in .env "
+            "(missing or invalid)") in capsys.readouterr().err
 
 
 def test_rest_search_network_failure_exit_5_with_request_id(capsys):
@@ -526,3 +530,32 @@ def test_default_client_factory_is_rest(capsys, monkeypatch):
     monkeypatch.setattr(rest_mod, "NansenRESTClient", fake_rest)
     code = main(["PEPE"], fng_fetcher=fng_const(70), env_file=None)  # default client factory
     assert code == 0 and made == ["rest"]
+
+
+def test_real_link_7d_distributing_via_volume_scale(capsys):
+    responses = real_responses()
+    responses["general_search"] = ok("general_search", fixture_text("real_search_link.json"))
+    responses["token_recent_flows_summary"] = ok("token_recent_flows_summary",
+                                                 fixture_text("real_link_flow_7d.json"))
+    responses["token_who_bought_sold"] = ok("token_who_bought_sold", fixture_text("real_wbs_empty.json"))
+    fake = FakeNansenClient(responses)
+    main(["LINK", "--period", "7d", "--json"], client_factory=fake.factory,
+         fng_fetcher=fng_const(70), env_file=None)
+    data = json.loads(capsys.readouterr().out)
+    assert data["token"]["address"].startswith("0x514910771a")
+    assert data["sm"]["flow_basis"] == "volume" and data["sm"]["label"] == "Distributing"
+    assert {"key": "no_sm_trades", "params": {}} in data["reasons"]
+
+
+def test_real_empty_flow_and_empty_wbs_is_insufficient(capsys):
+    responses = real_responses()
+    responses["token_recent_flows_summary"] = ok("token_recent_flows_summary",
+                                                 fixture_text("real_aave_flow_1d.json"))
+    responses["token_who_bought_sold"] = ok("token_who_bought_sold", fixture_text("real_wbs_empty.json"))
+    fake = FakeNansenClient(responses)
+    main(["PEPE", "--lang", "en"], client_factory=fake.factory, fng_fetcher=fng_const(70),
+         env_file=None)
+    out = capsys.readouterr().out
+    assert "Not enough smart-money data" in out
+    assert "Net flow: no smart-money flow in this period" in out
+    assert "$0 bought / $0 sold" in out

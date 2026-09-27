@@ -52,6 +52,9 @@ DEFAULT_FLOW_SCALE = 1e5   # USD, used when gross in/out flow is unknown
 #: linearly, so $40 of one-sided "dust" can't produce a +1.00 strong signal.
 #: Override with ZALAT_MIN_GROSS_USD (0 disables the damping).
 MIN_GROSS_USD = 10_000.0
+#: When no gross flow is known, tanh(net / scale) uses scale = this share of the
+#: token's 24h trading volume (but at least MIN_GROSS_USD).
+FLOW_VOLUME_SHARE = 0.02
 
 KINDS = (
     "CONTRARIAN_BULLISH",
@@ -90,8 +93,12 @@ class SmartMoneySignal:
     unavailable_reasons: list[tuple[str, dict]] = field(default_factory=list)
     #: True if any available part was damped for having < MIN_GROSS_USD volume.
     small_volume: bool = False
-    #: True if flow_score used an ESTIMATED gross (avg flow x wallets, REST).
-    gross_estimated: bool = False
+    #: How flow_score was scaled: "in_out" (net / (inflow+outflow)), "buy_sell"
+    #: (net / smart bought+sold USD), "volume" (tanh(net / 2% of 24h volume)),
+    #: "fixed" (tanh(net / $100k)), or None when the flow part is unavailable.
+    flow_basis: str | None = None
+    #: True if the who-bought-sold lists had more pages than we fetched.
+    wbs_truncated: bool = False
     #: Top-PnL traders' flow (REST): secondary context, not part of the score.
     top_pnl: SmFlow | None = None
 
@@ -102,6 +109,7 @@ class PriceContext:
 
     price_usd: float | None
     change_pct: float | None
+    #: "24h", or "prev_close" (latest close vs the previous daily close, UTC).
     window: str = "24h"
     #: Where change_pct came from: "nansen_token_info" | "lunarcrush" | None.
     source: str | None = None
@@ -179,9 +187,10 @@ def build_price_context(
     lc_ok = social is not None and social.available
     price = next((p for p in (token.price_usd, info_price, ohlcv_close,
                               social.price_usd if lc_ok else None) if p is not None), None)
-    change, source = None, None
+    change, source, window = None, None, "24h"
     if ohlcv_change is not None:
-        change, source = ohlcv_change, "nansen_ohlcv"
+        # Latest (current, partial-day) close vs the previous daily close.
+        change, source, window = ohlcv_change, "nansen_ohlcv", "prev_close"
     elif info_change is not None:
         change, source = info_change, "nansen_token_info"
     elif lc_ok and social.pct_change_24h is not None:
@@ -189,7 +198,7 @@ def build_price_context(
     m = market or {}
     if price is None and change is None and not m:
         return None
-    return PriceContext(price, change, "24h", source, price_direction(change),
+    return PriceContext(price, change, window, source, price_direction(change),
                         m.get("market_cap_usd"), m.get("liquidity_usd"), m.get("holders"))
 
 
@@ -230,49 +239,68 @@ def build_sm_signal(
     flow_scale: float = DEFAULT_FLOW_SCALE,
     min_gross_usd: float | None = None,
     top_pnl: SmFlow | None = None,
+    volume_24h: float | None = None,
+    wbs_truncated: bool = False,
 ) -> SmartMoneySignal:
     """Combine the flow and buy/sell parts into one smart-money signal.
 
-    Each part is a direction ratio in [-1, 1] multiplied by a size factor
-    ``min(1, gross / min_gross_usd)``: a one-sided but tiny flow counts as
-    tiny, not as a strong signal.
+    Flow part (direction ratio in [-1, 1]), first rule that applies:
+
+    1. inflow and outflow known: ``net / (inflow + outflow)``;
+    2. smart buy+sell USD known (who-bought-sold) and > 0:
+       ``net / (bought + sold)``, clamped. The REST flow endpoint has no
+       in/out split, and the smart wallets' own traded volume is the best
+       available measure of how much smart money moved;
+    3. otherwise ``tanh(net / scale)`` with scale = max(MIN_GROSS_USD, 2% of
+       the token's 24h volume) when the volume is known, else $100k.
+
+    Rules 1-2 are multiplied by the size factor ``min(1, gross / min_gross_usd)``
+    so a one-sided but tiny flow counts as tiny. An EMPTY flow (net 0 and
+    0 wallets) is unavailable, not a 0.0 that would dilute the buy/sell part.
     """
     min_gross = MIN_GROSS_USD if min_gross_usd is None else min_gross_usd
     reasons: list[tuple[str, dict]] = []
     small = False
-    estimated = False
+    basis: str | None = None
+
+    bs_total = None
+    if buy is not None and sell is not None and buy.volume_usd is not None \
+            and sell.volume_usd is not None:
+        bs_total = buy.volume_usd + sell.volume_usd
 
     flow_score = None
-    if flow is not None and flow.net_usd is not None:
+    if flow is not None and flow.net_usd is not None and not flow.is_empty:
         if flow.inflow_usd is not None and flow.outflow_usd is not None:
             gross = abs(flow.inflow_usd) + abs(flow.outflow_usd)
-            # Clamp: a reported net can disagree slightly with in/out.
             ratio = max(-1.0, min(1.0, flow.net_usd / max(gross, 1.0)))
             flow_score = ratio * _size_factor(gross, min_gross)
-        elif flow.estimated_gross_usd is not None:
-            # Nansen REST gives net flow, average flow per wallet and the
-            # wallet count, but no in/out split: estimate gross = avg x count.
-            gross = flow.estimated_gross_usd
+            basis = "in_out"
+        elif bs_total is not None and bs_total > 0:
+            gross = bs_total
             ratio = max(-1.0, min(1.0, flow.net_usd / gross))
             flow_score = ratio * _size_factor(gross, min_gross)
-            estimated = True
+            basis = "buy_sell"
         else:
-            # Only the net is known. tanh(net / flow_scale) already shrinks
-            # small nets toward 0; |net| is the best lower bound on gross.
+            # Only the net is known. tanh shrinks small nets toward 0; the scale
+            # follows the token's size when its 24h volume is known.
             gross = abs(flow.net_usd)
-            flow_score = math.tanh(flow.net_usd / flow_scale)
+            if volume_24h is not None and volume_24h > 0:
+                scale, basis = max(min_gross, FLOW_VOLUME_SHARE * volume_24h), "volume"
+            else:
+                scale, basis = flow_scale, "fixed"
+            flow_score = math.tanh(flow.net_usd / (scale if scale > 0 else flow_scale))
         small = small or gross < min_gross
+    elif flow is not None and flow.is_empty:
+        reasons.append(("no_sm_flow", {}))
     else:
         reasons.append(("flow_unavailable", {}))
 
     bs_score = None
-    if buy is not None and sell is not None and buy.volume_usd is not None \
-            and sell.volume_usd is not None:
-        total = buy.volume_usd + sell.volume_usd
-        if total > 0:
-            bs_score = ((buy.volume_usd - sell.volume_usd) / total
-                        * _size_factor(total, min_gross))
-            small = small or total < min_gross
+    if bs_total is not None:
+        if bs_total > 0:
+            bs_score = ((buy.volume_usd - sell.volume_usd) / bs_total
+                        * _size_factor(bs_total, min_gross))
+            small = small or bs_total < min_gross
         else:
             reasons.append(("no_sm_trades", {}))
     else:
@@ -283,17 +311,16 @@ def build_sm_signal(
     score = sum(w * v for w, v in avail) / sum(w for w, _ in avail) if avail else None
 
     # Wallet count: the flows summary's own count if it has one. Otherwise use
-    # the larger of the buyer/seller lists: the same wallet can appear on both
-    # sides, so adding them would double-count. This is a lower bound.
+    # the buyer/seller count (a lower bound: wallets are counted once).
     wallets = None
-    if flow is not None and flow.wallets is not None:
+    if flow is not None and flow.wallets is not None and not flow.is_empty:
         wallets = flow.wallets
-    elif buy is not None and sell is not None:
+    elif buy is not None and sell is not None and (buy.wallets or sell.wallets):
         wallets = max(buy.wallets, sell.wallets)
 
     return SmartMoneySignal(flow, buy, sell, flow_score, bs_score, score,
                             sm_label(score), sm_strength(score), wallets, reasons, small,
-                            estimated, top_pnl)
+                            basis, wbs_truncated, top_pnl)
 
 
 def _primary(market: CrowdSignal, social: SocialSignal | None

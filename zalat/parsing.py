@@ -229,16 +229,15 @@ class SmFlow:
     outflow_usd: float | None
     wallets: int | None
     source_row: dict = field(default_factory=dict)
-    #: Average absolute flow per wallet (Nansen REST flow-intelligence). With
-    #: ``wallets`` it gives an ESTIMATED gross flow when in/out are unknown.
+    #: Nansen REST's ``*_avg_flow_usd``, shown as-is for context. Its exact
+    #: meaning is undocumented (it can be non-zero with 0 wallets, or equal
+    #: |net|), so it is NOT used to estimate gross flow.
     avg_usd: float | None = None
 
     @property
-    def estimated_gross_usd(self) -> float | None:
-        """avg flow per wallet x wallet count (only when both are > 0)."""
-        if self.avg_usd and self.wallets and self.avg_usd > 0 and self.wallets > 0:
-            return self.avg_usd * self.wallets
-        return None
+    def is_empty(self) -> bool:
+        """No smart-money flow at all in the period (net 0 and 0 wallets)."""
+        return self.net_usd == 0 and self.wallets == 0 and not self.inflow_usd and not self.outflow_usd
 
 
 _COHORT_INCLUDE = [["segment"], ["cohort"], ["label"], ["category"], ["group"], ["type"],
@@ -621,3 +620,12 @@ def extract_token_market(text: str) -> dict[str, float] | None:
         return out or None
     except Exception:  # noqa: BLE001
         return None
+
+
+def is_truncated(text: str | None) -> bool:
+    """True if a (merged) who-bought-sold reply says more pages were left unfetched."""
+    try:
+        payload = unwrap_payload(text or "")
+        return bool(isinstance(payload, dict) and payload.get("truncated"))
+    except Exception:  # noqa: BLE001
+        return False

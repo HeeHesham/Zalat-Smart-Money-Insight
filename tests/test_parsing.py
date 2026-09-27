@@ -254,7 +254,7 @@ def test_real_flow_smart_trader_cohort():
     assert f.net_usd == pytest.approx(-1524.3839674757212)
     assert f.inflow_usd is None and f.outflow_usd is None
     assert f.wallets == 12 and f.avg_usd == pytest.approx(6842.438769389481)
-    assert f.estimated_gross_usd == pytest.approx(6842.438769389481 * 12)
+    assert not f.is_empty and not hasattr(f, "estimated_gross_usd")
     assert set(f.source_row) == {"smart_trader_net_flow_usd", "smart_trader_avg_flow_usd",
                                  "smart_trader_wallet_count"}
 
@@ -264,15 +264,22 @@ def test_real_flow_top_pnl_cohort():
     assert tp.net_usd == pytest.approx(-6616800.821203695) and tp.wallets == 78
 
 
-def test_estimated_gross_needs_positive_avg_and_wallets():
-    assert extract_sm_flow(json.dumps({"data": [{"smart_trader_net_flow_usd": 5,
-                                                 "smart_trader_avg_flow_usd": None,
-                                                 "smart_trader_wallet_count": 3}]})
-                           ).estimated_gross_usd is None
-    f = extract_sm_flow(json.dumps({"data": [{"smart_trader_net_flow_usd": 5,
-                                              "smart_trader_avg_flow_usd": 10,
-                                              "smart_trader_wallet_count": 0}]}))
-    assert f.estimated_gross_usd is None and f.wallets == 0
+def test_empty_flow_detection_on_real_reply():
+    f = extract_sm_flow(fixture_text("real_aave_flow_1d.json"))
+    assert f.net_usd == 0 and f.wallets == 0 and f.avg_usd is None and f.is_empty
+    link = extract_sm_flow(fixture_text("real_link_flow_7d.json"))
+    assert link.net_usd == pytest.approx(-117658.90807550188) and link.wallets == 4
+    assert not link.is_empty
+    # avg can exceed |net|/wallets or be set with 0 wallets: kept as raw context only
+    assert link.avg_usd == pytest.approx(26950.62124056874)
+
+
+def test_is_truncated():
+    from zalat.parsing import is_truncated
+
+    assert not is_truncated(fixture_text("real_wbs_buy.json"))
+    assert is_truncated(json.dumps({"data": [], "truncated": True}))
+    assert not is_truncated(None) and not is_truncated("garbage")
 
 
 def test_real_who_bought_sold_union_by_address():

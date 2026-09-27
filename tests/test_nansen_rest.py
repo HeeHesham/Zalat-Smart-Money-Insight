@@ -64,7 +64,7 @@ def test_who_bought_sold_body(period, frm):
         "filters": {"include_smart_money_labels": REST_SMART_LABELS,
                     "trade_volume_usd": {"min": 10}},
         "order_by": [{"field": "token_trade_volume", "direction": "DESC"}],
-        "pagination": {"page": 1, "per_page": 25},
+        "pagination": {"page": 1, "per_page": 100},
     }
 
 
@@ -123,7 +123,8 @@ def test_auth_errors_raise_with_request_id(code):
     with pytest.raises(NansenAuthError) as info:
         _run(lambda r: httpx.Response(code, json=body))
     msg = str(info.value)
-    assert msg.startswith(AUTH_MESSAGE) and f"HTTP {code}" in msg and "req-err-1" in msg
+    assert msg == (f"Nansen rejected the request (HTTP {code}, request_id req-err-1): "
+                   "check NANSEN_API_KEY in .env (missing or invalid)")
     assert FAKE_KEY not in msg
 
 
@@ -195,3 +196,72 @@ def test_requires_context_manager():
 def test_make_client_backend_switch():
     assert isinstance(make_client(settings()), NansenRESTClient)
     assert isinstance(make_client(settings(backend="mcp")), NansenMCPClient)
+
+
+def test_auth_message_variants():
+    from zalat.nansen_rest import auth_message
+
+    assert AUTH_MESSAGE == "Nansen rejected the request: check NANSEN_API_KEY in .env (missing or invalid)"
+    assert auth_message(403) == ("Nansen rejected the request (HTTP 403): check NANSEN_API_KEY in .env "
+                                 "(missing or invalid)")
+
+
+def _wbs_page(page, n, last):
+    rows = [{"address": f"0x{page:02d}{i:038d}", "bought_volume_usd": 10.0, "sold_volume_usd": 1.0}
+            for i in range(n)]
+    return {"data": rows, "pagination": {"page": page, "per_page": 100, "is_last_page": last}}
+
+
+def _paged(pages_total, fail_on=None):
+    bodies = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        bodies.append(body)
+        page = body["pagination"]["page"]
+        if page == fail_on:
+            return httpx.Response(500, text="boom", headers={"X-Request-Id": f"req-p{page}"})
+        hdr = {"X-Request-Id": f"req-p{page}", "X-Nansen-Credits-Cost": "1",
+               "X-Nansen-Credits-Remaining": str(1000 - page)}
+        return httpx.Response(200, json=_wbs_page(page, 100, page >= pages_total), headers=hdr)
+    return handler, bodies
+
+
+def test_who_bought_sold_fetches_more_pages():
+    handler, bodies = _paged(3)
+    res, _ = _run(handler, tool="token_who_bought_sold",
+                  args=who_bought_sold_args(PEPE, "BUY", "1d"))
+    data = json.loads(res.text)
+    assert [b["pagination"]["page"] for b in bodies] == [1, 2, 3]
+    assert len(data["data"]) == 300 and data["truncated"] is False
+    assert data["request_ids"] == ["req-p1", "req-p2", "req-p3"]
+    assert res.request_id == "req-p1" and res.credits_cost == 3 and res.credits_remaining == 997
+
+
+def test_who_bought_sold_stops_at_four_pages_and_marks_truncated():
+    from zalat.parsing import extract_buy_sell, is_truncated
+
+    handler, bodies = _paged(10)
+    res, _ = _run(handler, tool="token_who_bought_sold",
+                  args=who_bought_sold_args(PEPE, "SELL", "1d"))
+    data = json.loads(res.text)
+    assert len(bodies) == 4 and len(data["data"]) == 400 and data["truncated"] is True
+    assert is_truncated(res.text)
+    buy, _ = extract_buy_sell(res.text, json.dumps({"data": []}))
+    assert buy.wallets == 400
+
+
+def test_who_bought_sold_page_failure_keeps_what_it_has():
+    handler, bodies = _paged(5, fail_on=2)
+    res, _ = _run(handler, tool="token_who_bought_sold",
+                  args=who_bought_sold_args(PEPE, "BUY", "1d"))
+    data = json.loads(res.text)
+    assert res.ok and len(data["data"]) == 100 and data["truncated"] is True
+    assert data["request_ids"] == ["req-p1", "req-p2"]
+
+
+def test_single_page_reply_is_kept_verbatim():
+    raw = fixture_text("real_wbs_buy.json")
+    res, seen = _run(lambda r: httpx.Response(200, text=raw), tool="token_who_bought_sold",
+                     args=who_bought_sold_args(PEPE, "BUY", "1d"))
+    assert res.text == raw and len(seen) == 1
