@@ -332,3 +332,57 @@ def test_real_token_information_market_context():
         "liquidity_usd": pytest.approx(17171733.51866558), "holders": 409302}
     assert extract_price_info(fixture_text("real_tokinfo.json")) == (None, None)  # no price there
     assert extract_token_market("nope") is None and extract_token_market('{"data": {}}') is None
+
+
+# ======================= Canonical listing across chains ===============================
+from zalat.nansen_mcp import parse_search_candidates, pick_candidate  # noqa: E402
+
+_EEE = "0x" + "e" * 40
+# Shape and numbers from a live Nansen search/general reply for "ETH" (2026-09-27).
+_ETH_SEARCH = json.dumps({"tokens": [
+    {"symbol": "ETH", "chain": "hyperliquid", "address": "ETH", "volume_24h": 4.99e8, "market_cap": 3.282e11},
+    {"symbol": "ETH", "chain": "base", "address": _EEE, "volume_24h": 1.97e7, "market_cap": 3.282e11},
+    {"symbol": "ETH", "chain": "ethereum", "address": _EEE, "volume_24h": 6.08e7, "market_cap": 3.282e11},
+    {"symbol": "ETH", "chain": "robinhood", "address": _EEE, "volume_24h": 2.108e8, "market_cap": 3.282e11},
+    {"symbol": "ETH", "chain": "bnb", "address": "0x2170ed0880ac9a755fd29b2688956bd959f933f8",
+     "volume_24h": 1.28e7, "market_cap": 1.36e9},
+    {"symbol": "ETH", "chain": "solana", "address": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+     "volume_24h": 9.4e6, "market_cap": 1.15e8},
+]})
+
+
+def test_native_asset_on_many_chains_prefers_main_chain():
+    # Robinhood has the highest 24h volume, but native ETH belongs on ethereum.
+    t = pick_candidate(parse_search_candidates(_ETH_SEARCH))
+    assert t.chain == "ethereum" and t.address == _EEE and t.market_cap_usd == 3.282e11
+
+
+def test_bridged_copy_with_slightly_higher_cap_still_prefers_ethereum():
+    # PEPE: the bnb listing reports a ~2% higher market cap than the ethereum one.
+    text = json.dumps({"tokens": [
+        {"symbol": "PEPE", "chain": "ethereum", "address": "0x6982508145454ce325ddbe47a25d4ec3d2311933",
+         "volume_24h": 1.15e6, "market_cap": 1.845e9},
+        {"symbol": "PEPE", "chain": "bnb", "address": "0x25d887ce7a35172c62febfd67a1856f20faebb00",
+         "volume_24h": 3.1e4, "market_cap": 1.875e9},
+        {"symbol": "PEPE", "chain": "solana", "address": "PEPEqnuuCDbBC89p1u9vpnP1KQ2oj1xTcQBsjt9X55m",
+         "volume_24h": 7.4e5, "market_cap": 1.55e6},
+    ]})
+    assert pick_candidate(parse_search_candidates(text)).chain == "ethereum"
+
+
+def test_largest_market_cap_beats_main_chain_copycat():
+    # SOL: a small wrapped copy on ethereum must not win over native Solana.
+    text = json.dumps({"tokens": [
+        {"symbol": "SOL", "chain": "ethereum", "address": "0xd31a59c85ae9d8edefec411d448f90841571b89c",
+         "volume_24h": 2e5, "market_cap": 5e7},
+        {"symbol": "SOL", "chain": "solana", "address": "So11111111111111111111111111111111111111112",
+         "volume_24h": 3e9, "market_cap": 7.2e10},
+    ]})
+    assert pick_candidate(parse_search_candidates(text)).chain == "solana"
+
+
+def test_without_market_caps_falls_back_to_volume():
+    cands = parse_search_candidates(fixture_text("search_pepe.json"))
+    pepes = [c for c in cands if c.symbol == "PEPE"]
+    assert pick_candidate(pepes).address == "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+    assert pick_candidate([]) is None
