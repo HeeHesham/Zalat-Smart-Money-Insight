@@ -1,0 +1,6 @@
+# Who Sold PEPE (last 1D)
+
+| Address | Label | Sold Volume USD | Tokens Sold |
+|:--------|:------|----------------:|------------:|
+| 0x999... | All Time Smart Trader | $120.0k | 30000000000 |
+| 0x888... | 180D Smart Trader | 80k | 20000000000 |
