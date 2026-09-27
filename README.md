@@ -204,8 +204,9 @@ returns no sentiment, the verdict still renders. It uses the market-wide mood an
 # Basic: token symbol, English + Arabic output, last 1 day
 python -m zalat PEPE
 
-# No --chain needed: every chain is searched and the exact symbol match with the
-# highest 24h volume wins (SOL -> native Solana, not a wrapped copy on Ethereum)
+# No --chain needed: every chain is searched; among exact symbol matches the largest
+# market cap wins, and for an asset listed on several chains the main chain is preferred
+# (ethereum, solana, bitcoin, bnb, base, arbitrum, ...). ETH -> Ethereum, SOL -> Solana.
 python -m zalat SOL --period 7d
 
 # Force a chain (e.g. the Ethereum UNI contract) and pick a lookback (5m, 1h, 6h, 12h, 1d, 7d)
