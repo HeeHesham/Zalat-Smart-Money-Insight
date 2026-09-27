@@ -85,7 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("symbol", nargs="?", help="token symbol, e.g. PEPE (optional with --address)")
     p.add_argument("--address", help="token contract address; skips the symbol search")
-    p.add_argument("--chain", default="ethereum", help="chain name (default: ethereum)")
+    p.add_argument("--chain", default=None,
+                   help="chain name (default: auto - search all chains and pick the "
+                        "highest-volume exact symbol match; ethereum with --address)")
     p.add_argument("--period", default="1d", choices=LOOKBACK,
                    help="smart-money lookback period (default: 1d)")
     p.add_argument("--lang", default="both", choices=("en", "ar", "both"),
@@ -180,7 +182,11 @@ async def run(
         args.symbol.upper() if args.symbol else None,
         settings.lunarcrush_key, settings.lunarcrush_url, settings.timeout))
 
-    chain = args.chain.strip().lower()
+    # No --chain: search every chain and let resolve_token pick the exact symbol
+    # match with the highest 24h volume. --address needs a chain, so default it.
+    chain = args.chain.strip().lower() if args.chain else ""
+    if args.address and not chain:
+        chain = "ethereum"
     token: TokenRef | None = None
     if args.address:
         addr = args.address.strip()
@@ -216,7 +222,8 @@ async def run(
                              "Try again, or pass --address <contract>.", settings)
                         return EXIT_UNREACHABLE, ""
                     else:
-                        _err(f"Could not find token '{args.symbol}' on chain '{chain}'. "
+                        where = f"on chain '{chain}'" if chain else "on any supported chain"
+                        _err(f"Could not find token '{args.symbol}' {where}. "
                              "Check the symbol/chain or pass --address <contract>.", settings)
                     return EXIT_NOT_FOUND, ""
                 log.debug("resolved %s -> %s", args.symbol, token.address)

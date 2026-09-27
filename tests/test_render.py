@@ -378,3 +378,19 @@ def test_net_only_flow_line():
     sm = build_sm_signal(SmFlow(2e5, None, None, 5, {}, None), None, None)
     v = decide(TOK, "1d", sm, signal_from_value(70))
     assert "  - Net flow: +$200.0k (5 wallets)" in render_text(v, "en")
+
+
+def test_market_context_hides_missing_and_zero_values():
+    sm = build_sm_signal(SmFlow(1.5e6, None, None, 369, {}, 9e5), BuySellSide(1.07e7, 5),
+                         BuySellSide(8.7e6, 5))
+    # Native SOL: Nansen reports liquidity 0 and no holder count.
+    price = PriceContext(123.1, 1.1, "prev_close", "nansen_ohlcv", "Flat", 7.2e10, 0.0, None)
+    v = decide(TOK, "7d", sm, signal_from_value(70), None, price)
+    en, ar = render_text(v, "en"), render_text(v, "ar")
+    assert "Market context: market cap $72.0B\n" in en
+    assert "liquidity" not in en and "n/a" not in en.split("Market context:")[1].split("\n")[0]
+    assert "سياق السوق: القيمة السوقية $72.0B\n" in ar and "السيولة" not in ar
+    # Nothing at all -> the existing "unavailable" line (kept for EN/AR parity).
+    v2 = decide(TOK, "7d", sm, signal_from_value(70), None,
+                PriceContext(123.1, 1.1, "prev_close", "nansen_ohlcv", "Flat", None, 0.0, 0))
+    assert "Market context: unavailable" in render_text(v2, "en")

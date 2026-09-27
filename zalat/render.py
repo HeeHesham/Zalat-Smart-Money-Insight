@@ -108,14 +108,25 @@ def price_line(v: Verdict) -> LineFn:
 
 
 def market_ctx_line(v: Verdict) -> LineFn:
+    """Market cap / liquidity / holders - only the values Nansen actually returned.
+
+    Zero or missing values are left out rather than printed as "$0" or "n/a"
+    (e.g. native SOL reports no liquidity and no holder count).
+    """
     p = v.price
 
     def fn(lang: Lang) -> str:
-        if p is None or all(x is None for x in (p.market_cap_usd, p.liquidity_usd, p.holders)):
+        parts: list[str] = []
+        if p is not None:
+            if p.market_cap_usd:
+                parts.append(t("ctx_mcap", lang, v=fmt_usd(p.market_cap_usd)))
+            if p.liquidity_usd:
+                parts.append(t("ctx_liq", lang, v=fmt_usd(p.liquidity_usd)))
+            if p.holders:
+                parts.append(t("ctx_holders", lang, v=f"{int(p.holders):,}"))
+        if not parts:
             return t("market_ctx_na", lang)
-        holders = f"{int(p.holders):,}" if p.holders is not None else "n/a"
-        return t("market_ctx_line", lang, mcap=fmt_usd(p.market_cap_usd),
-                 liq=fmt_usd(p.liquidity_usd), holders=holders)
+        return t("market_ctx_line", lang, parts=t("list_sep", lang).join(parts))
     return fn
 
 

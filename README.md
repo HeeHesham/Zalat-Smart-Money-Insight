@@ -23,7 +23,7 @@ context**, and prints a **verdict in English and Arabic**.
 | Smart-money flow | `tgm/flow-intelligence` | `smart_trader_*` net flow and wallet count (scored), Nansen's `avg_flow` (shown only); `top_pnl_*` (context only) |
 | Who bought / sold | `tgm/who-bought-sold` (BUY and SELL) | USD bought and sold by Smart Trader / Fund wallets (100 per page, up to 4 pages per side) |
 | Price change | `tgm/token-ohlcv` | latest close vs the previous daily close (UTC) |
-| Market context | `tgm/token-information` | market cap, liquidity, holders (display only) |
+| Market context | `tgm/token-information` | market cap, liquidity, holders (display only; values Nansen does not return are left out) |
 
 Set `ZALAT_NANSEN_BACKEND=mcp` to use Nansen's **MCP server** (`https://mcp.nansen.ai/ra/mcp/`) instead. MCP needs a real
 `NANSEN_API_KEY`, because the MCP server forwards your key to the same REST API.
@@ -204,7 +204,11 @@ returns no sentiment, the verdict still renders. It uses the market-wide mood an
 # Basic: token symbol, English + Arabic output, last 1 day
 python -m zalat PEPE
 
-# Choose chain and lookback period (5m, 1h, 6h, 12h, 1d, 7d)
+# No --chain needed: every chain is searched and the exact symbol match with the
+# highest 24h volume wins (SOL -> native Solana, not a wrapped copy on Ethereum)
+python -m zalat SOL --period 7d
+
+# Force a chain (e.g. the Ethereum UNI contract) and pick a lookback (5m, 1h, 6h, 12h, 1d, 7d)
 python -m zalat UNI --chain ethereum --period 7d
 
 # Skip the symbol search by giving the contract address directly.
@@ -624,7 +628,7 @@ Nansen stress test (rest) - completed
 | `Nansen unreachable` (exit 5) | Check your internet connection, VPN, proxy or firewall. If Nansen moved the endpoint, set `NANSEN_API_URL` (REST) or `NANSEN_MCP_URL` (MCP) in `.env`. Try `--timeout 60`. |
 | Rate limited (429) | The tool already waits and retries 3 times. For the stress test, raise `--delay`. |
 | `Token search failed (tool_error: ...)` (exit 5) | The `general_search` call failed on Nansen's side. Try again later, pass `--address <contract>`, or send the `--raw` output. |
-| `Could not find token` (exit 3) | Check the symbol and `--chain`, or pass `--address <contract>`. |
+| `Could not find token` (exit 3) | Check the symbol (and `--chain`, if you gave one), or pass `--address <contract>` (with `--address`, the chain defaults to `ethereum`). |
 | "no smart-money buys or sells in this period" | Real result: no labelled smart wallet traded the token in that window. Try `--period 7d`. |
 | Verdict says `INSUFFICIENT_DATA`, or a signal is "unavailable" | A Nansen call returned an error (e.g. `NANSEN_TOOL_ERROR ... unclassified_failure`, or an HTTP error) or an unexpected format. Run with `--raw` and **send the `--raw` output, including the request_id lines** (e.g. `python -m zalat PEPE --raw 2> raw_output.txt`) so the parsers can be tuned. The key is never included. |
 | "Token social sentiment: not configured" | Expected without `LUNARCRUSH_API_KEY`. The verdict uses the market-wide mood instead. Social sentiment needs a paid LunarCrush plan. |

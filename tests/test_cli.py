@@ -561,3 +561,51 @@ def test_real_empty_flow_and_empty_wbs_is_insufficient(capsys):
     assert "Not enough smart-money data" in out
     assert "Net flow: no smart-money flow in this period" in out
     assert "$0 bought / $0 sold" in out
+
+
+# ======================= Auto chain (no --chain) =======================================
+_SOL_SEARCH = json.dumps({"tokens": [
+    {"name": "SOL", "symbol": "SOL", "chain": "hyperliquid", "address": "SOL",
+     "price": 123.0, "volume_24h": 9e9},
+    {"name": "Wrapped SOL", "symbol": "SOL", "chain": "ethereum",
+     "address": "0xd31a59c85ae9d8edefec411d448f90841571b89c", "price": 123.0, "volume_24h": 2e5},
+    {"name": "Solana", "symbol": "SOL", "chain": "solana",
+     "address": "So11111111111111111111111111111111111111112", "price": 123.1,
+     "volume_24h": 3e9},
+]})
+
+
+def test_no_chain_searches_all_chains_and_picks_highest_volume(key, capsys):
+    responses = happy_responses()
+    responses["general_search"] = ok("general_search", _SOL_SEARCH)
+    code, fake = cli(["SOL", "--period", "7d", "--lang", "en"], FakeNansenClient(responses))
+    out = capsys.readouterr().out
+    assert code == 0
+    search = fake.calls[0]
+    assert search[0] == "general_search" and "chain" not in search[1]
+    # Perp listing skipped, low-volume wrapped copy on ethereum loses to native Solana.
+    assert fake.calls[1][1]["request"]["chain"] == "solana"
+    assert "Solana (SOL)" in out and "Chain: solana" in out
+
+
+def test_explicit_chain_still_filters(key, capsys):
+    responses = happy_responses()
+    responses["general_search"] = ok("general_search", _SOL_SEARCH)
+    code, fake = cli(["SOL", "--chain", "ethereum"], FakeNansenClient(responses))
+    assert code == 0
+    assert fake.calls[0][1]["chain"] == "ethereum"
+    assert fake.calls[1][1]["request"]["chain"] == "ethereum"
+
+
+def test_no_chain_not_found_message(key, capsys):
+    responses = happy_responses()
+    responses["general_search"] = ok("general_search", json.dumps({"tokens": []}))
+    code, _ = cli(["NOPE"], FakeNansenClient(responses))
+    assert code == 3
+    assert "on any supported chain" in capsys.readouterr().err
+
+
+def test_address_without_chain_defaults_to_ethereum(key, capsys):
+    code, fake = cli(["--address", "0xabc"])
+    assert code == 0
+    assert fake.calls[0][1]["request"]["chain"] == "ethereum"
