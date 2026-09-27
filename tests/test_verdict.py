@@ -5,6 +5,7 @@ import math
 import pytest
 
 from zalat.fng import CrowdSignal, signal_from_value
+from zalat.lunarcrush import SocialSignal, social_bucket
 from zalat.nansen_mcp import TokenRef
 from zalat.parsing import BuySellSide, SmFlow
 from zalat.verdict import (
@@ -17,6 +18,14 @@ from zalat.verdict import (
 
 TOK = TokenRef("PEPE", "Pepe", "0xabc", "ethereum")
 NO_CROWD = CrowdSignal(False, error="offline")
+
+
+def social_sig(sentiment, status="ok", **kw):
+    """A LunarCrush SocialSignal with the given 0-100 sentiment."""
+    if status != "ok":
+        return SocialSignal(status, "PEPE", **kw)
+    return SocialSignal("ok", "PEPE", sentiment, social_bucket(sentiment),
+                        (sentiment - 50) / 50, **kw)
 
 
 def sm(score, flow_score="same", bs_score="same", wallets=20):
@@ -118,8 +127,14 @@ def test_divergence_sign():
 
 
 # ---- confidence -------------------------------------------------------------------
-def test_confidence_high():
+def test_confidence_market_mood_only_is_capped_at_medium():
+    # Everything strong, but the only crowd signal is market-wide -> Medium.
     v = decide(TOK, "1d", sm(0.7), signal_from_value(20))
+    assert v.confidence == "Medium" and v.reasons == [("crowd_market_wide", {})]
+
+
+def test_confidence_high_with_token_social():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(20), social_sig(20))
     assert v.confidence == "High" and v.reasons == []
 
 
@@ -214,3 +229,170 @@ def test_small_volume_downgrades_confidence():
     v = decide(TOK, "1d", s, signal_from_value(15))
     assert v.kind == "CONTRARIAN_BULLISH"
     assert ("small_volume", {}) in v.reasons and v.confidence == "Medium"
+
+
+# ======================= Sprint 2: merged crowd model ===================================
+from zalat.verdict import (  # noqa: E402
+    PriceContext,
+    build_price_context,
+    crowd_side,
+    price_direction,
+)
+
+
+def price(change, price_usd=1.0, source="nansen_token_info"):
+    return PriceContext(price_usd, change, "24h", source, price_direction(change))
+
+
+@pytest.mark.parametrize("social, market, source", [
+    (social_sig(20), signal_from_value(80), "token_social"),
+    (social_sig(20), NO_CROWD, "token_social"),
+    (social_sig(None, "not_configured"), signal_from_value(80), "market_mood"),
+    (social_sig(None, "not_authorized", http_status=402), NO_CROWD, None),
+    (None, signal_from_value(80), "market_mood"),
+    (None, NO_CROWD, None),
+])
+def test_primary_crowd_selection(social, market, source):
+    v = decide(TOK, "1d", sm(0.7), market, social)
+    assert v.crowd_source == source
+    if source is None:
+        assert v.kind == "SM_ONLY"
+
+
+@pytest.mark.parametrize("score, sentiment, kind", [
+    (0.7, 10, "CONTRARIAN_BULLISH"), (0.7, 30, "CONTRARIAN_BULLISH"),
+    (-0.7, 70, "WARNING_BEARISH"), (-0.7, 90, "WARNING_BEARISH"),
+    (0.7, 70, "CONFIRMED_BULLISH"), (0.7, 85, "CONFIRMED_BULLISH"),
+    (-0.7, 30, "CONFIRMED_BEARISH"), (-0.7, 10, "CONFIRMED_BEARISH"),
+    (0.1, 10, "NEUTRAL"), (0.7, 50, "NEUTRAL"),
+    (0.7, 41, "NEUTRAL"), (0.7, 60, "NEUTRAL"),        # Mixed band edges
+    (0.7, 40, "CONTRARIAN_BULLISH"), (-0.7, 61, "WARNING_BEARISH"),
+])
+def test_matrix_with_token_social(score, sentiment, kind):
+    # Market mood deliberately points the other way: token social must win.
+    market = signal_from_value(90 if sentiment < 50 else 10)
+    v = decide(TOK, "1d", sm(score), market, social_sig(sentiment))
+    assert v.kind == kind
+    assert v.crowd_source == "token_social"
+    assert v.disagreement is (kind in ("CONTRARIAN_BULLISH", "WARNING_BEARISH"))
+
+
+@pytest.mark.parametrize("sentiment, bucket", [
+    (0, "Very Bearish"), (20, "Very Bearish"), (21, "Bearish"), (40, "Bearish"),
+    (41, "Mixed"), (60, "Mixed"), (61, "Bullish"), (79, "Bullish"),
+    (80, "Very Bullish"), (100, "Very Bullish"),
+])
+def test_social_buckets(sentiment, bucket):
+    assert social_bucket(sentiment) == bucket
+
+
+def test_kinds_identical_to_sprint1_without_social():
+    for score, fng, kind in [(0.7, 20, "CONTRARIAN_BULLISH"), (-0.7, 80, "WARNING_BEARISH"),
+                             (0.7, 80, "CONFIRMED_BULLISH"), (-0.7, 20, "CONFIRMED_BEARISH"),
+                             (0.7, 50, "NEUTRAL")]:
+        a = decide(TOK, "1d", sm(score), signal_from_value(fng))
+        b = decide(TOK, "1d", sm(score), signal_from_value(fng), social_sig(None, "not_configured"))
+        assert a.kind == b.kind == kind
+
+
+def test_crowd_side():
+    assert crowd_side("Extreme Fear") == crowd_side("Very Bearish") == crowd_side("Bearish") == -1
+    assert crowd_side("Greed") == crowd_side("Very Bullish") == 1
+    assert crowd_side("Neutral") == crowd_side("Mixed") == crowd_side(None) == 0
+
+
+def test_divergence_uses_primary_crowd():
+    v = decide(TOK, "1d", sm(0.5), signal_from_value(90), social_sig(25))
+    assert v.divergence == pytest.approx(0.5 * 0.5)  # vs social c=-0.5, not F&G
+
+
+def test_social_neutral_reason_and_market_neutral_not_used_when_social_primary():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(50), social_sig(55))
+    keys = [k for k, _ in v.reasons]
+    assert "social_neutral" in keys and "crowd_neutral" not in keys
+
+
+def test_crowd_market_wide_only_when_it_lowers():
+    v = decide(TOK, "1d", sm(0.3), signal_from_value(20))  # already Medium
+    assert v.confidence == "Medium"
+    assert ("crowd_market_wide", {}) not in v.reasons
+
+
+def test_token_vs_market_note():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(85), social_sig(25))
+    assert ("token_vs_market", {}) in v.notes
+    same = decide(TOK, "1d", sm(0.7), signal_from_value(15), social_sig(25))
+    assert ("token_vs_market", {}) not in same.notes
+
+
+def test_social_status_note_always_present_when_not_ok():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(20), social_sig(None, "not_configured"))
+    assert ("social_status_not_configured", {"fallback": True}) in v.notes
+    v2 = decide(TOK, "1d", sm(0.7), NO_CROWD, social_sig(None, "not_authorized", http_status=402))
+    assert ("social_status_not_authorized", {"fallback": False, "code": 402}) in v2.notes
+
+
+def test_market_unavailable_note_when_social_primary():
+    v = decide(TOK, "1d", sm(0.7), NO_CROWD, social_sig(20))
+    assert ("market_unavailable", {}) in v.notes and v.confidence == "High"
+
+
+def test_crowded_trade_with_very_bullish_social():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(50), social_sig(90))
+    assert v.kind == "CONFIRMED_BULLISH" and ("crowded_trade", {}) in v.notes
+
+
+@pytest.mark.parametrize("change, direction", [
+    (3.0, "Rising"), (2.99, "Flat"), (-3.0, "Falling"), (-2.99, "Flat"), (0, "Flat"), (None, None),
+])
+def test_price_direction_boundaries(change, direction):
+    assert price_direction(change) == direction
+
+
+@pytest.mark.parametrize("score, change, note", [
+    (0.7, -5, "accumulation_on_dip"), (0.7, 5, "buying_momentum"),
+    (-0.7, 5, "distribution_into_strength"), (-0.7, -5, "exiting_weakness"),
+])
+def test_price_notes(score, change, note):
+    v = decide(TOK, "1d", sm(score), signal_from_value(20), None, price(change))
+    assert (note, {}) in v.notes
+    base = decide(TOK, "1d", sm(score), signal_from_value(20))
+    assert v.kind == base.kind  # price never changes the kind
+
+
+def test_no_price_note_when_flat_or_neutral_sm():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(20), None, price(1.0))
+    assert not any(k in ("accumulation_on_dip", "buying_momentum") for k, _ in v.notes)
+    v2 = decide(TOK, "1d", sm(0.1), signal_from_value(20), None, price(-10))
+    assert not any(k == "accumulation_on_dip" for k, _ in v2.notes)
+
+
+def test_price_volatile_downgrade():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(20), social_sig(20), price(-20))
+    assert v.confidence == "Medium" and ("price_volatile", {}) in v.reasons
+    v2 = decide(TOK, "1d", sm(0.7), signal_from_value(20), social_sig(20), price(-19.9))
+    assert v2.confidence == "High"
+
+
+def test_build_price_context_priorities():
+    tok = TokenRef("PEPE", "Pepe", "0x1", "ethereum", price_usd=4e-06)
+    lc = SocialSignal("ok", "PEPE", 70, "Bullish", 0.4, price_usd=5e-06, pct_change_24h=-5.0)
+    # search price wins; token_info change wins over LunarCrush
+    p = build_price_context(tok, (3e-06, 12.0), lc)
+    assert (p.price_usd, p.change_pct, p.source, p.direction) == (4e-06, 12.0, "nansen_token_info", "Rising")
+    # token_info failed -> LunarCrush change
+    p2 = build_price_context(tok, None, lc)
+    assert (p2.change_pct, p2.source) == (-5.0, "lunarcrush")
+    # untrusted (mismatch) LunarCrush is ignored
+    bad = SocialSignal("mismatch", "PEPE", price_usd=1.0, pct_change_24h=50.0)
+    p3 = build_price_context(tok, None, bad)
+    assert p3.change_pct is None and p3.source is None and p3.price_usd == 4e-06
+    # no price anywhere -> None; token_info price used when search had none
+    assert build_price_context(TokenRef("X", "", "0x2", "ethereum"), None, None) is None
+    p4 = build_price_context(TokenRef("X", "", "0x2", "ethereum"), (7.85, None), None)
+    assert p4.price_usd == 7.85 and p4.direction is None
+
+
+def test_verdict_crowd_alias():
+    v = decide(TOK, "1d", sm(0.7), signal_from_value(20))
+    assert v.crowd is v.market_mood

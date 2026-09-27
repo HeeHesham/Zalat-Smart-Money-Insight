@@ -20,6 +20,7 @@ from zalat.errors import ConfigError
 DEFAULT_MCP_URL = "https://mcp.nansen.ai/ra/mcp/"
 DEFAULT_KEY_HEADER = "NANSEN-API-KEY"
 DEFAULT_FNG_URL = "https://api.alternative.me/fng/?limit=2"
+DEFAULT_LC_URL = "https://lunarcrush.com/api4"
 PLACEHOLDER_KEYS = {"your_key_here", "changeme", "xxx", "<your key>"}
 
 # Secrets registered here are scrubbed by redact() when no explicit list is given.
@@ -28,7 +29,7 @@ _KNOWN_SECRETS: set[str] = set()
 
 @dataclass(frozen=True)
 class Settings:
-    """Runtime configuration. ``repr`` never shows the key."""
+    """Runtime configuration. ``repr`` never shows either key."""
 
     api_key: str
     mcp_url: str = DEFAULT_MCP_URL
@@ -37,13 +38,23 @@ class Settings:
     fng_url: str = DEFAULT_FNG_URL
     #: None = use verdict.MIN_GROSS_USD (set via ZALAT_MIN_GROSS_USD).
     min_gross_usd: float | None = None
+    #: Optional LunarCrush key (token social sentiment needs a PAID plan).
+    #: None = adapter disabled: no LunarCrush request is ever made.
+    lunarcrush_key: str | None = None
+    lunarcrush_url: str = DEFAULT_LC_URL
 
     def __repr__(self) -> str:
+        lc = "'***'" if self.lunarcrush_key else "None"
         return (
             f"Settings(api_key='***', mcp_url={self.mcp_url!r}, key_header={self.key_header!r}, "
             f"timeout={self.timeout!r}, fng_url={self.fng_url!r}, "
-            f"min_gross_usd={self.min_gross_usd!r})"
+            f"min_gross_usd={self.min_gross_usd!r}, lunarcrush_key={lc}, "
+            f"lunarcrush_url={self.lunarcrush_url!r})"
         )
+
+    def secrets(self) -> list[str]:
+        """Every secret to scrub from output: the Nansen key and, if set, LunarCrush's."""
+        return [s for s in (self.api_key, self.lunarcrush_key) if s]
 
     __str__ = __repr__
 
@@ -92,6 +103,13 @@ def load_settings(env_file: str | Path | None = ".env", timeout: float | None = 
         if min_gross < 0:
             raise ConfigError("ZALAT_MIN_GROSS_USD must be >= 0")
 
+    # LunarCrush is optional: missing / placeholder simply disables it.
+    lc_key: str | None = _clean(os.environ.get("LUNARCRUSH_API_KEY"))
+    if not lc_key or lc_key.lower() in PLACEHOLDER_KEYS:
+        lc_key = None
+    else:
+        _KNOWN_SECRETS.add(lc_key)
+
     return Settings(
         api_key=key,
         mcp_url=_clean(os.environ.get("NANSEN_MCP_URL")) or DEFAULT_MCP_URL,
@@ -99,6 +117,8 @@ def load_settings(env_file: str | Path | None = ".env", timeout: float | None = 
         timeout=timeout,
         fng_url=_clean(os.environ.get("ZALAT_FNG_URL")) or DEFAULT_FNG_URL,
         min_gross_usd=min_gross,
+        lunarcrush_key=lc_key,
+        lunarcrush_url=(_clean(os.environ.get("LUNARCRUSH_URL")) or DEFAULT_LC_URL).rstrip("/"),
     )
 
 
@@ -106,13 +126,15 @@ def redact(text: str, secrets: Iterable[str] | None = None) -> str:
     """Replace every non-empty secret in ``text`` with ``***``.
 
     With ``secrets=None`` the keys loaded by :func:`load_settings` in this
-    process (plus a current ``NANSEN_API_KEY`` env var) are used.
+    process (plus current ``NANSEN_API_KEY`` / ``LUNARCRUSH_API_KEY`` env
+    vars) are used.
     """
     if secrets is None:
         pool = set(_KNOWN_SECRETS)
-        env_key = _clean(os.environ.get("NANSEN_API_KEY"))
-        if env_key:
-            pool.add(env_key)
+        for var in ("NANSEN_API_KEY", "LUNARCRUSH_API_KEY"):
+            env_key = _clean(os.environ.get(var))
+            if env_key and env_key.lower() not in PLACEHOLDER_KEYS:
+                pool.add(env_key)
         secrets = pool
     # Longest first so a secret containing another is fully replaced.
     for s in sorted((s for s in secrets if s), key=len, reverse=True):

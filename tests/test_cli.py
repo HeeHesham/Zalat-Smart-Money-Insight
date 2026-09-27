@@ -38,11 +38,15 @@ def test_happy_path_both_languages(key, capsys):
     code, fake = cli(["PEPE"])
     out, err = capsys.readouterr()
     assert code == 0
-    assert "Smart money is buying into fear" in out
-    assert "الأموال الذكية تشتري وسط الخوف" in out
+    # No LUNARCRUSH_API_KEY -> market-wide wording + future-work note.
+    assert "Smart money is buying while the overall crypto market is fearful (market-wide mood, not this token)" in out
+    assert "الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)" in out
+    assert "not configured - needs a paid LunarCrush API plan" in out
+    assert "غير مُفعَّلة - تتطلب اشتراكاً مدفوعاً في LunarCrush" in out
     assert DISCLAIMER_EN in out and DISCLAIMER_AR in out
     assert [c[0] for c in fake.calls] == ["general_search", "token_recent_flows_summary",
-                                          "token_who_bought_sold", "token_who_bought_sold"]
+                                          "token_who_bought_sold", "token_who_bought_sold",
+                                          "token_info"]
     assert FAKE_KEY not in out + err
 
 
@@ -77,7 +81,8 @@ def test_all_data_tools_fail_gives_insufficient_data(key, capsys):
     code, _ = cli(["PEPE", "--lang", "en"], fake)
     out = capsys.readouterr().out
     assert code == 0
-    assert "Not enough smart-money data" in out and "Crowd mood: Extreme Fear" in out
+    assert "Not enough smart-money data" in out
+    assert "Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Extreme Fear" in out
 
 
 def test_address_skips_search_and_period(key, capsys):
@@ -169,8 +174,8 @@ def test_disagreement_banner(key, capsys):
     cli(["PEPE"], fng=20)
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines[1] == ">>> DISAGREEMENT: SMART MONEY vs CROWD <<<"
-    assert ">>> تباين: الأموال الذكية عكس الجمهور <<<" in out
+    assert lines[1] == ">>> DISAGREEMENT: SMART MONEY vs OVERALL MARKET MOOD <<<"
+    assert ">>> تباين: الأموال الذكية عكس مزاج السوق العام <<<" in out
     cli(["PEPE"], fng=80)  # confirmed bullish -> no banner
     assert ">>>" not in capsys.readouterr().out
 
@@ -258,3 +263,143 @@ def test_dust_does_not_trigger_banner(key, capsys):
     code, _ = cli(["PEPE"], FakeNansenClient(responses), fng=15)
     out = capsys.readouterr().out
     assert code == 0 and ">>>" not in out and "No clear divergence" in out
+
+
+# ======================= Sprint 2: LunarCrush + price in the CLI =========================
+import asyncio  # noqa: E402
+
+from tests.conftest import FAKE_LC_KEY, social_const  # noqa: E402
+from zalat.lunarcrush import SocialSignal  # noqa: E402
+
+
+def cli2(argv, fake=None, fng=20, social=None):
+    fake = fake or FakeNansenClient(happy_responses())
+    code = main(argv, client_factory=fake.factory, fng_fetcher=fng_const(fng),
+                social_fetcher=social, env_file=None)
+    return code, fake
+
+
+def test_lc_off_default_fetcher_makes_no_request(key, capsys, monkeypatch):
+    import httpx
+
+    real_init = httpx.AsyncClient.__init__
+    created = []
+
+    def spy(self, *a, **k):
+        created.append(k)
+        real_init(self, *a, **k)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", spy)
+    code, _ = cli2(["PEPE", "--json"])  # default social fetcher, no LUNARCRUSH_API_KEY
+    data = json.loads(capsys.readouterr().out)
+    assert code == 0 and data["social"]["status"] == "not_configured"
+    assert data["crowd_source"] == "market_mood" and data["confidence"] == "Medium"
+    assert created == []  # neither LunarCrush (nor anything else) opened a client
+
+
+def test_lc_ok_gives_social_headline(key, capsys):
+    code, _ = cli2(["PEPE", "--lang", "en"], fng=80, social=social_const(sentiment=25))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Smart money is buying while this token's social crowd is bearish" in out
+    assert "Token social sentiment (PEPE, LunarCrush): Bearish - 25% positive" in out
+    assert "not configured" not in out
+
+
+def test_lc_402_note_and_market_fallback(key, capsys):
+    sig = SocialSignal("not_authorized", "PEPE", http_status=402)
+    code, _ = cli2(["PEPE", "--lang", "en"], social=social_const(sig))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "(market-wide mood, not this token)" in out
+    assert "key rejected or plan lacks social data (HTTP 402); this verdict compares" in out
+
+
+def test_lc_price_mismatch_is_ignored(key, capsys):
+    # LunarCrush price 100x off Nansen's search price -> different coin -> ignored.
+    lc = SocialSignal("ok", "PEPE", 25, "Bearish", -0.5, price_usd=4e-04)
+    cli2(["PEPE", "--json"], social=social_const(lc))
+    data = json.loads(capsys.readouterr().out)
+    assert data["social"]["status"] == "mismatch" and data["crowd_source"] == "market_mood"
+
+
+def test_lc_symbol_passed_and_address_only_no_symbol(key, capsys):
+    got = []
+
+    async def spy(symbol, key_, base, timeout):
+        got.append((symbol, key_, base))
+        return SocialSignal("not_configured", symbol)
+
+    cli2(["pepe"], social=spy)
+    cli2(["--address", "0xabc"], social=spy)
+    assert got[0][0] == "PEPE" and got[1][0] is None
+    assert got[0][1] is None  # no LUNARCRUSH_API_KEY set
+
+
+def test_lc_key_from_env_reaches_fetcher_and_is_redacted(key, capsys, monkeypatch):
+    monkeypatch.setenv("LUNARCRUSH_API_KEY", FAKE_LC_KEY)
+    seen = []
+
+    async def leaky(symbol, key_, base, timeout):
+        seen.append(key_)
+        return SocialSignal("error", symbol, error=f"boom {key_}")
+
+    responses = happy_responses()
+    responses["token_info"] = ok("token_info", f"echo {FAKE_LC_KEY} {FAKE_KEY}")
+    code, _ = cli2(["PEPE", "--raw", "-v"], FakeNansenClient(responses), social=leaky)
+    out, err = capsys.readouterr()
+    assert code == 0 and seen == [FAKE_LC_KEY]
+    assert "=== lunarcrush status=error" in err and "=== token_info ok=True" in err
+    assert FAKE_LC_KEY not in out + err and FAKE_KEY not in out + err
+
+
+def test_fng_and_lc_fetched_concurrently(key, capsys):
+    both_started = asyncio.Event()
+    started = []
+
+    async def fng(url, timeout):
+        started.append("fng")
+        if len(started) == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), 2)
+        return await fng_const(20)(url, timeout)
+
+    async def lc(symbol, key_, base, timeout):
+        started.append("lc")
+        if len(started) == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), 2)  # deadlocks (-> timeout) if sequential
+        return SocialSignal("not_configured", symbol)
+
+    fake = FakeNansenClient(happy_responses())
+    code = main(["PEPE", "--json"], client_factory=fake.factory, fng_fetcher=fng,
+                social_fetcher=lc, env_file=None)
+    assert code == 0 and sorted(started) == ["fng", "lc"]
+
+
+def test_token_info_failure_is_harmless(key, capsys):
+    responses = happy_responses()
+    responses["token_info"] = tool_error("token_info")
+    code, _ = cli2(["PEPE", "--json"], FakeNansenClient(responses))
+    data = json.loads(capsys.readouterr().out)
+    assert code == 0
+    # search price is still known, change is not
+    assert data["price"]["price_usd"] == 4e-06 and data["price"]["change_pct"] is None
+
+
+def test_price_context_from_token_info(key, capsys):
+    code, _ = cli2(["PEPE", "--lang", "en"])
+    out = capsys.readouterr().out
+    assert "Price: $0.000004 (-5.2% over 24h, source Nansen token_info)" in out
+    assert "e-06" not in out
+
+
+def test_early_exit_cancels_sentiment_tasks(key, capsys):
+    # token not found -> exit 3 without awaiting the (never-finishing) fetchers
+    async def never(*a):
+        await asyncio.sleep(3600)
+
+    fake = FakeNansenClient(happy_responses())
+    code = main(["NOPE"], client_factory=fake.factory, fng_fetcher=never,
+                social_fetcher=never, env_file=None)
+    assert code == 3

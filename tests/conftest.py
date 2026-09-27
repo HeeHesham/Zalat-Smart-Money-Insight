@@ -16,9 +16,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from zalat.fng import CrowdSignal, signal_from_value  # noqa: E402
+from zalat.lunarcrush import SocialSignal, signal_from_data  # noqa: E402
 from zalat.nansen_mcp import ToolResult  # noqa: E402
 
 FAKE_KEY = "sk-test-SECRET-0123456789abcdef"
+FAKE_LC_KEY = "lc-test-SECRET-fedcba9876543210"
 
 
 class NetworkBlocked(RuntimeError):
@@ -65,7 +67,8 @@ def _restore_logging():
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests never see the developer's real key or overrides."""
     for var in ("NANSEN_API_KEY", "NANSEN_MCP_URL", "NANSEN_API_KEY_HEADER",
-                "ZALAT_TIMEOUT", "ZALAT_FNG_URL"):
+                "ZALAT_TIMEOUT", "ZALAT_FNG_URL", "ZALAT_MIN_GROSS_USD",
+                "LUNARCRUSH_API_KEY", "LUNARCRUSH_URL"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -132,6 +135,7 @@ def happy_responses() -> dict[str, Responder]:
         "general_search": ok("general_search", fixture_text("search_pepe.json")),
         "token_recent_flows_summary": ok("token_recent_flows_summary", fixture_text("flows_md.txt")),
         "token_who_bought_sold": wbs,
+        "token_info": ok("token_info", fixture_text("token_info_md.txt")),
     }
 
 
@@ -142,5 +146,21 @@ def fng_const(value: int | None) -> Callable[[str, float], Any]:
         if value is None:
             return CrowdSignal(False, error="offline")
         return signal_from_value(value, "test")
+
+    return _fetch
+
+
+def social_const(sig: SocialSignal | None = None, sentiment: float | None = None):
+    """A fake LunarCrush fetcher. Pass a ready SocialSignal, or a sentiment
+    value to build an "ok" one from the lc_coin.json fixture."""
+    import json
+
+    async def _fetch(symbol, key, base, timeout) -> SocialSignal:
+        if sig is not None:
+            return sig
+        data = json.loads(fixture_text("lc_coin.json"))
+        if sentiment is not None:
+            data["data"]["sentiment"] = sentiment
+        return signal_from_data(symbol or "?", data)
 
     return _fetch

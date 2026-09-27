@@ -212,6 +212,8 @@ class TokenRef:
     address: str
     chain: str
     volume_24h: float | None = None
+    #: Live price from the search result ("Price USD"), if present.
+    price_usd: float | None = None
 
 
 def search_args(symbol: str, chain: str | None, max_results: int = 10) -> dict:
@@ -252,6 +254,8 @@ def parse_search_candidates(text: str, default_chain: str | None = None) -> list
         name_c = find_col(cols, [["name"]], exclude=["symbol"])
         chain_c = find_col(cols, [["chain"], ["network"]])
         vol_c = find_col(cols, [["volume", "24"], ["volume"]])
+        price_c = find_col(cols, [["price", "usd"], ["price"]],
+                           exclude=["change", "pct", "percent", "volume"])
         if not sym_c or not addr_c or not r.get(addr_c):
             continue
         out.append(TokenRef(
@@ -260,6 +264,7 @@ def parse_search_candidates(text: str, default_chain: str | None = None) -> list
             address=str(r.get(addr_c, "")).strip(),
             chain=(str(r.get(chain_c, "")).strip().lower() if chain_c else "") or (default_chain or ""),
             volume_24h=parse_number(r.get(vol_c)) if vol_c else None,
+            price_usd=parse_number(r.get(price_c)) if price_c else None,
         ))
     return out
 
@@ -281,6 +286,17 @@ async def resolve_token(c: NansenClient, symbol: str, chain: str) -> tuple[Token
         return None, res
     cands.sort(key=lambda t: t.volume_24h if t.volume_24h is not None else -1.0, reverse=True)
     return cands[0], res
+
+
+def token_info_args(token: TokenRef, timeframe: str = "1d") -> dict:
+    """Arguments for ``token_info`` (price / market context)."""
+    return {"request": {"chain": token.chain, "tokenAddress": token.address,
+                        "timeframe": timeframe}}
+
+
+async def get_token_info(c: NansenClient, token: TokenRef) -> ToolResult:
+    """Price / market data for the token (context only; failure is harmless)."""
+    return await c.call("token_info", token_info_args(token))
 
 
 async def get_flows(c: NansenClient, token: TokenRef, period: str) -> ToolResult:

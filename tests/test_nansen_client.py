@@ -228,3 +228,20 @@ def test_real_client_unreachable():
 def test_real_client_requires_context_manager():
     with pytest.raises(RuntimeError):
         run(NansenMCPClient(_settings()).call("x", {}))
+
+
+def test_search_captures_price_usd():
+    fake = FakeNansenClient({"general_search": ok("general_search", fixture_text("search_pepe.json"))})
+    token, _ = run(resolve_token(fake, "PEPE", "ethereum"))
+    assert token.price_usd == pytest.approx(4e-06)
+
+
+def test_token_info_args():
+    from zalat.nansen_mcp import get_token_info, token_info_args
+
+    tok = TokenRef("PEPE", "Pepe", PEPE, "ethereum")
+    assert token_info_args(tok) == {"request": {"chain": "ethereum", "tokenAddress": PEPE,
+                                                "timeframe": "1d"}}
+    fake = FakeNansenClient()
+    res = run(get_token_info(fake, tok))
+    assert fake.calls[0][0] == "token_info" and not res.ok

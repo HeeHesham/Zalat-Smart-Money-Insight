@@ -22,7 +22,10 @@ def _verdict(fng=20, flow=SmFlow(1.2e6, 1.5e6, 3e5, 12, {"Segment": "Smart Money
 
 
 def test_i18n_tables_are_complete():
-    assert set(KIND_TEXT["en"]) == set(KIND_TEXT["ar"]) == set(KINDS)
+    assert set(KIND_TEXT["en"]) == set(KIND_TEXT["ar"]) == {"token_social", "market_mood"}
+    for lang in ("en", "ar"):
+        for source in ("token_social", "market_mood"):
+            assert set(KIND_TEXT[lang][source]) == set(KINDS)
     assert set(STRINGS["en"]) == set(STRINGS["ar"])
     assert set(LABELS["en"]) == set(LABELS["ar"])
 
@@ -48,9 +51,9 @@ def test_t_formats_and_falls_back():
 
 def test_english_text():
     out = render_text(_verdict(), "en")
-    assert "Smart money is buying into fear" in out
+    assert "Smart money is buying while the overall crypto market is fearful (market-wide mood, not this token)" in out
     assert "Disagreement: YES" in out
-    assert "market-wide" in out
+    assert "NOT specific to PEPE (Pepe)" in out
     assert "+$1.2M" in out and "$800.0k bought" in out
     assert out.rstrip().endswith(DISCLAIMER_EN)
     assert "ليست" not in out
@@ -58,8 +61,8 @@ def test_english_text():
 
 def test_arabic_text():
     out = render_text(_verdict(), "ar")
-    assert "الأموال الذكية تشتري وسط الخوف" in out
-    assert "للسوق كله" in out  # market-wide note in Arabic
+    assert "الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)" in out
+    assert "ليس خاصاً بـ PEPE (Pepe)" in out  # market-wide label in Arabic
     assert "+$1.2M" in out  # Western digits kept
     assert out.rstrip().endswith(DISCLAIMER_AR)
     assert "Not financial advice" not in out
@@ -82,7 +85,7 @@ def test_insufficient_data_render():
     v = decide(TOK, "1d", build_sm_signal(None, None, None), signal_from_value(30))
     out = render_text(v, "both")
     assert "Smart money: Unavailable" in out and "الأموال الذكية: غير متاح" in out
-    assert "Crowd mood: Fear (30/100)" in out
+    assert "NOT specific to PEPE (Pepe)): Fear (30/100)" in out
 
 
 def test_json_is_valid_and_complete():
@@ -91,9 +94,12 @@ def test_json_is_valid_and_complete():
     assert data["disagreement"] is True
     assert data["token"]["address"] == TOK.address
     assert data["sm"]["flow"]["source_columns"] == ["Segment"]
-    assert data["headline"]["ar"] == "الأموال الذكية تشتري وسط الخوف"
+    assert data["headline"]["ar"] == "الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)"
+    assert data["crowd_source"] == "market_mood"
+    assert "crowd" not in data  # renamed to market_mood
     assert data["disclaimer"] == {"en": DISCLAIMER_EN, "ar": DISCLAIMER_AR}
-    assert data["crowd"]["scope"].startswith("market-wide")
+    assert data["market_mood"]["scope"].startswith("market-wide")
+    assert data["social"]["status"] == "not_configured"
     assert "api_key" not in json.dumps(data)
 
 
@@ -117,8 +123,9 @@ def test_arabic_wording():
     assert "وارد $1.5M / صادر $300.0k" in out
     assert "12 محفظة" in out
     assert "داخل" not in out and "خارج" not in out
-    assert KIND_TEXT["ar"]["NEUTRAL"][2] == "لا يوجد اتجاه قوي لدى الأموال الذكية أو لدى الجمهور."
-    assert "يسيطر الطمع على الجمهور" in KIND_TEXT["ar"]["WARNING_BEARISH"][2]
+    assert KIND_TEXT["ar"]["market_mood"]["NEUTRAL"][2] == \
+        "لا يوجد اتجاه قوي لدى الأموال الذكية أو في مزاج السوق العام."
+    assert "يسيطر الطمع على سوق الكريبتو بأكمله" in KIND_TEXT["ar"]["market_mood"]["WARNING_BEARISH"][2]
     weak = t("weak_signal", "ar", s=0.12)
     assert "|" not in weak and "<" not in weak and "0.12" in weak
 
@@ -135,8 +142,14 @@ def test_no_dead_i18n_keys():
 
     root = pathlib.Path(__file__).resolve().parent.parent / "zalat"
     code = "".join(p.read_text(encoding="utf-8") for p in root.glob("*.py") if p.name != "i18n.py")
+    # Keys built dynamically in code (f-strings / t() internals):
+    dynamic = ("source_", "social_status_", "crowd_name_")
+    internal = {"fallback_clause"}
     for key in STRINGS["en"]:
+        if key.startswith(dynamic) or key in internal:
+            continue
         assert re.search(rf'["\']{key}["\']', code), f"unused i18n key: {key}"
+    assert re.search(r'f"source_\{', code) and re.search(r'f"social_status_\{', code)
 
 
 def test_token_label():
@@ -162,3 +175,131 @@ def test_address_only_token_label_and_json_symbol():
     data = json.loads(render_json(v))
     assert data["token"]["symbol"] == ""
     assert data["token"]["address"] == tok.address
+
+
+# ======================= Sprint 2: honest labelling, social, price =======================
+import itertools  # noqa: E402
+
+from zalat.i18n import fmt_pct, fmt_price, kind_text  # noqa: E402
+from zalat.lunarcrush import SocialSignal, social_bucket  # noqa: E402
+from zalat.verdict import PriceContext  # noqa: E402
+
+AR_NOT_SPECIFIC = "ليس خاصاً بـ"
+
+
+def _social(sentiment=25, status="ok", **kw):
+    if status != "ok":
+        return SocialSignal(status, "PEPE", **kw)
+    return SocialSignal("ok", "PEPE", sentiment, social_bucket(sentiment), (sentiment - 50) / 50,
+                        galaxy_score=65, price_usd=4.1e-06, pct_change_24h=-5.2)
+
+
+def _v2(fng=20, social=None, price=None, score_flow=SmFlow(1.2e6, 1.5e6, 3e5, 12, {})):
+    sm = build_sm_signal(score_flow, BuySellSide(8e5, 3), BuySellSide(2e5, 2))
+    market = signal_from_value(fng) if fng is not None else CrowdSignal(False)
+    return decide(TOK, "1d", sm, market, social, price)
+
+
+@pytest.mark.parametrize("x, out", [(4e-06, "$0.000004"), (0.000358, "$0.000358"),
+                                    (0.145946, "$0.1459"), (1234.5, "$1,235"), (7.85, "$7.85"),
+                                    (999.95, "$1,000"), (None, "n/a")])
+def test_fmt_price(x, out):
+    assert fmt_price(x) == out
+
+
+def test_fmt_pct():
+    assert (fmt_pct(3.24), fmt_pct(-12), fmt_pct(None)) == ("+3.2%", "-12.0%", "n/a")
+
+
+def test_kind_text_by_source():
+    assert "social crowd is bearish" in kind_text("CONTRARIAN_BULLISH", "en", "token_social")[1]
+    assert kind_text("CONTRARIAN_BULLISH", "en", "market_mood")[1].endswith(
+        "(market-wide mood, not this token)")
+    assert kind_text("SM_ONLY", "en", None) == kind_text("SM_ONLY", "en", "token_social")
+
+
+@pytest.mark.parametrize("fng, social, flow", list(itertools.product(
+    (10, 50, 90),
+    (None, "ok_bear", "ok_bull", "not_configured", "not_authorized"),
+    ("buy", "sell", "none"),
+)))
+def test_fng_value_always_labelled_market_wide(fng, social, flow):
+    """Invariant: any rendered F&G value sits on a line that says it is market-wide."""
+    sig = {None: None, "ok_bear": _social(25), "ok_bull": _social(75),
+           "not_configured": _social(status="not_configured"),
+           "not_authorized": _social(status="not_authorized", http_status=402)}[social]
+    f = {"buy": SmFlow(1.2e6, 1.5e6, 3e5, 12, {}), "sell": SmFlow(-1.2e6, 3e5, 1.5e6, 12, {}),
+         "none": None}[flow]
+    v = _v2(fng, sig, PriceContext(4e-06, -5.2, "24h", "nansen_token_info", "Falling"), f)
+    en, ar = render_text(v, "en"), render_text(v, "ar")
+    marker = f"({fng}/100)"
+    en_lines = [ln for ln in en.splitlines() if marker in ln]
+    ar_lines = [ln for ln in ar.splitlines() if marker in ln]
+    assert len(en_lines) == 1 and len(ar_lines) == 1
+    assert "NOT specific to" in en_lines[0] and "whole crypto market" in en_lines[0]
+    assert AR_NOT_SPECIFIC in ar_lines[0]
+    assert "/100" not in en.replace(marker, "")  # nothing else looks like an F&G reading
+    assert "Crowd mood" not in en and "e-0" not in en + ar
+
+
+def test_social_primary_render():
+    v = _v2(fng=85, social=_social(25))
+    en = render_text(v, "en")
+    assert "Smart money is buying while this token's social crowd is bearish" in en
+    assert ">>> DISAGREEMENT: SMART MONEY vs TOKEN'S SOCIAL CROWD <<<" in en
+    assert "Token social sentiment (PEPE, LunarCrush): Bearish - 25% positive, Galaxy Score 65" in en
+    assert "Secondary context - Market-wide mood (whole crypto market" in en
+    assert "this token's crowd diverges from the overall market mood" in en
+    ar = render_text(v, "ar")
+    assert "الأموال الذكية تشتري بينما جمهور العملة على وسائل التواصل متشائم" in ar
+    assert "سياق ثانوي - مزاج السوق العام" in ar
+    assert "not configured" not in en
+
+
+def test_not_configured_note_both_languages():
+    v = _v2(social=_social(status="not_configured"))
+    assert ("Token social sentiment: not configured - needs a paid LunarCrush API plan "
+            "(set LUNARCRUSH_API_KEY). Future work; this verdict compares smart money with "
+            "market-wide mood instead.") in render_text(v, "en")
+    assert ("المشاعر الاجتماعية الخاصة بالعملة: غير مُفعَّلة - تتطلب اشتراكاً مدفوعاً في LunarCrush "
+            "(عيّن LUNARCRUSH_API_KEY). عمل مستقبلي؛ هذا الحكم يقارن الأموال الذكية بمزاج السوق "
+            "العام بدلاً منها.") in render_text(v, "ar")
+
+
+def test_not_authorized_note_has_code():
+    v = _v2(social=_social(status="not_authorized", http_status=402))
+    assert "key rejected or plan lacks social data (HTTP 402)" in render_text(v, "en")
+    assert "(HTTP 402)" in render_text(v, "ar")
+
+
+def test_price_lines():
+    v = _v2(price=PriceContext(4e-06, -5.2, "24h", "nansen_token_info", "Falling"))
+    en = render_text(v, "en")
+    assert "Price: $0.000004 (-5.2% over 24h, source Nansen token_info)" in en
+    assert "price falling while smart money buys" in en
+    assert "السعر: $0.000004 (-5.2% خلال 24h، المصدر Nansen token_info)" in render_text(v, "ar")
+    v2 = _v2(price=PriceContext(4e-06, None, "24h", None, None))
+    assert "Price: $0.000004 (24h change unavailable)" in render_text(v2, "en")
+    assert "Price:" not in render_text(_v2(price=None), "en")
+
+
+def test_json_sprint2_fields():
+    v = _v2(fng=85, social=_social(25),
+            price=PriceContext(4e-06, -5.2, "24h", "lunarcrush", "Falling"))
+    data = json.loads(render_json(v))
+    assert data["crowd_source"] == "token_social"
+    assert data["social"]["status"] == "ok" and data["social"]["sentiment"] == 25
+    assert data["social"]["scope"] == "token-specific social (LunarCrush)"
+    assert data["market_mood"]["value"] == 85
+    assert data["market_mood"]["scope"] == \
+        "market-wide (whole crypto market, BTC-centric), not token-specific"
+    assert data["price"] == {"price_usd": 4e-06, "change_pct": -5.2, "window": "24h",
+                             "source": "lunarcrush", "direction": "Falling"}
+    assert data["headline"]["en"] == "Smart money is buying while this token's social crowd is bearish"
+    assert "crowd" not in data and "price_usd" in data["token"]
+
+
+def test_json_price_null_and_social_not_configured():
+    data = json.loads(render_json(_v2(social=_social(status="not_configured"))))
+    assert data["price"] is None and data["social"]["status"] == "not_configured"
+    assert data["social"]["sentiment"] is None

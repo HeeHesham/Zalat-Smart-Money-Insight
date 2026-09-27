@@ -7,11 +7,25 @@ import json
 from typing import Literal
 
 from zalat import __version__
-from zalat.i18n import DISCLAIMER, Lang, fmt_score, fmt_usd, fmt_wallets, kind_text, label, t
+from zalat.i18n import (
+    DISCLAIMER,
+    Lang,
+    fmt_pct,
+    fmt_price,
+    fmt_score,
+    fmt_usd,
+    fmt_wallets,
+    kind_text,
+    label,
+    t,
+)
+from zalat.lunarcrush import SocialSignal
 from zalat.nansen_mcp import TokenRef
 from zalat.verdict import DISAGREEMENT_KINDS, Verdict
 
 DIVIDER = "=" * 60
+MARKET_SCOPE = "market-wide (whole crypto market, BTC-centric), not token-specific"
+SOCIAL_SCOPE = "token-specific social (LunarCrush)"
 
 
 def short_address(addr: str) -> str:
@@ -29,24 +43,40 @@ def token_label(tok: TokenRef) -> str:
     return tok.symbol
 
 
+def _crowd_name(v: Verdict, lang: Lang) -> str:
+    key = "crowd_name_social" if v.crowd_source == "token_social" else "crowd_name_market"
+    return t(key, lang)
+
+
+def _market_line(v: Verdict, lang: Lang) -> str:
+    """The ONLY place the Fear & Greed value is printed; always says market-wide."""
+    m = v.market_mood
+    if not m.available:
+        return t("market_na", lang)
+    return t("market_line", lang, token=token_label(v.token), label=label(m.label, lang),
+             value=m.value)
+
+
 def _block(v: Verdict, lang: Lang) -> str:
     """Render the verdict in one language."""
-    tok, sm, crowd = v.token, v.sm, v.crowd
-    short, headline, explanation = kind_text(v.kind, lang)
+    tok, sm = v.token, v.sm
+    short, headline, explanation = kind_text(v.kind, lang, v.crowd_source)
+    crowd_name = _crowd_name(v, lang)
     lines = [t("title", lang)]
     if v.kind in DISAGREEMENT_KINDS:
         # The headline case: make it impossible to miss.
-        lines.append(t("banner", lang))
+        lines.append(t("banner", lang, crowd_name=crowd_name.upper()))
     lines += [
         t("token_line", lang, token=token_label(tok), chain=tok.chain, period=v.period),
         t("address", lang, address=tok.address),
         "-" * 60,
         t("verdict", lang, headline=headline, kind=short),
         explanation,
-        t("disagree_yes" if v.disagreement else "disagree_no", lang),
+        t("disagree_yes", lang, crowd_name=crowd_name) if v.disagreement else t("disagree_no", lang),
         "",
     ]
 
+    # --- smart money (primary) ---
     if sm.label == "Unavailable":
         lines.append(t("sm_unavailable", lang))
     else:
@@ -68,12 +98,28 @@ def _block(v: Verdict, lang: Lang) -> str:
     else:
         lines.append(t("bs_na", lang))
 
-    if crowd.available:
-        lines.append(t("crowd_line", lang, label=label(crowd.label, lang), value=crowd.value))
+    # --- price context ---
+    p = v.price
+    if p is not None:
+        if p.change_pct is not None:
+            lines.append(t("price_line", lang, price=fmt_price(p.price_usd),
+                           change=fmt_pct(p.change_pct), window=p.window,
+                           source=t(f"source_{p.source}", lang)))
+        else:
+            lines.append(t("price_line_no_change", lang, price=fmt_price(p.price_usd)))
+
+    # --- crowd: token social first when it is the primary signal ---
+    social = v.social
+    if social is not None and social.available:
+        galaxy = f"{social.galaxy_score:.0f}" if social.galaxy_score is not None else "n/a"
+        lines.append(t("social_line", lang, symbol=social.symbol or token_label(tok),
+                       label=label(social.label, lang), sentiment=f"{social.sentiment:.0f}",
+                       galaxy=galaxy))
+        lines.append(f"{t('secondary_market', lang)} {_market_line(v, lang)}")
     else:
-        lines.append(t("crowd_na", lang))
+        lines.append(_market_line(v, lang))
     if v.divergence is not None:
-        lines.append(t("divergence", lang, d=fmt_score(v.divergence)))
+        lines.append(t("divergence", lang, d=fmt_score(v.divergence), crowd_name=crowd_name))
 
     lines.append("")
     lines.append(t("confidence", lang, level=label(v.confidence, lang)))
@@ -106,8 +152,14 @@ def render_json(v: Verdict) -> str:
     data["notes"] = [{"key": k, "params": p} for k, p in v.notes]
     data["sm"]["unavailable_reasons"] = [{"key": k, "params": p}
                                          for k, p in v.sm.unavailable_reasons]
-    data["headline"] = {"en": kind_text(v.kind, "en")[1], "ar": kind_text(v.kind, "ar")[1]}
-    data["crowd"]["scope"] = "market-wide (BTC-centric), not token-specific"
+    data["headline"] = {"en": kind_text(v.kind, "en", v.crowd_source)[1],
+                        "ar": kind_text(v.kind, "ar", v.crowd_source)[1]}
+    data["market_mood"]["scope"] = MARKET_SCOPE
+    if data["social"] is None:
+        # Library callers may omit the social source: report it as not configured.
+        data["social"] = {f.name: None for f in dataclasses.fields(SocialSignal)}
+        data["social"]["status"] = "not_configured"
+    data["social"]["scope"] = SOCIAL_SCOPE
     data["disclaimer"] = {"en": DISCLAIMER["en"], "ar": DISCLAIMER["ar"]}
     data["version"] = __version__
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)

@@ -1,0 +1,9 @@
+# Token Info: PEPE (ethereum)
+
+| Metric | Value |
+|:-------|:------|
+| Price USD | $0.000004 |
+| Price Change 24h | -5.2% |
+| Market Cap USD | 1.7B |
+| Volume 24h USD | 1.2M |
+| Holders | 480k |

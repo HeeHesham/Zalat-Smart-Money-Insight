@@ -42,7 +42,7 @@ def test_reaches_100_calls_and_writes_report(tmp_path, capsys):
     assert rep["total_calls"] == 100 and rep["status"] == "completed"
     assert rep["successes"] + rep["failures"] == 100
     assert set(rep["per_tool"]) == {"general_search", "token_recent_flows_summary",
-                                    "token_who_bought_sold"}
+                                    "token_who_bought_sold", "token_info"}
     for t in rep["per_tool"].values():
         assert {"calls", "ok", "fail", "avg_ms", "p95_ms"} <= set(t)
     # UNI is not in the PEPE search sample -> its searches don't resolve.
@@ -128,3 +128,24 @@ def test_stress_uses_side_aware_parsing(tmp_path):
     rep = json.loads((tmp_path / "stress_report.json").read_text(encoding="utf-8"))
     assert rep["parse_stats"].get("wbs_parsed", 0) >= 2
     assert "wbs_unparsed" not in rep["parse_stats"]
+
+
+def test_token_info_in_rotation_and_lunarcrush_never_called(tmp_path, monkeypatch):
+    import zalat.lunarcrush as lc
+
+    async def forbidden(*a, **k):
+        raise AssertionError("stress test must not call LunarCrush")
+
+    monkeypatch.setattr(lc, "fetch_social", forbidden)
+    s = Settings(api_key=FAKE_KEY, lunarcrush_key="lc-SECRET-should-not-leak")
+    fake = FakeNansenClient(happy_responses())
+    code = asyncio.run(stress.main(["--tokens", "PEPE", "--out", str(tmp_path)],
+                                   client_factory=fake.factory, settings=s, sleep=_nosleep))
+    assert code == 0 and len(fake.calls) == 100
+    assert {c[0] for c in fake.calls} == {"general_search", "token_recent_flows_summary",
+                                         "token_who_bought_sold", "token_info"}
+    rep = json.loads((tmp_path / "stress_report.json").read_text(encoding="utf-8"))
+    assert rep["total_calls"] == 100 and rep["per_tool"]["token_info"]["calls"] > 0
+    assert rep["parse_stats"]["token_info_parsed"] > 0
+    assert "lc-SECRET-should-not-leak" not in _files_text(tmp_path)
+    assert not hasattr(stress, "fetch_social")

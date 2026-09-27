@@ -22,23 +22,27 @@ from zalat import __version__
 from zalat.config import Settings, load_settings, redact
 from zalat.errors import ConfigError, NansenAuthError, NansenNetworkError, auth_message
 from zalat.fng import CrowdSignal, fetch_fng
+from zalat.lunarcrush import SocialSignal, apply_price_guard, fetch_social
 from zalat.nansen_mcp import (
     LOOKBACK,
     NansenMCPClient,
     ToolResult,
     TokenRef,
     get_flows,
+    get_token_info,
     get_who_bought_sold,
     resolve_token,
 )
-from zalat.parsing import extract_side_volume, extract_sm_flow
+from zalat.parsing import extract_price_info, extract_side_volume, extract_sm_flow
 from zalat.render import render_json, render_text
-from zalat.verdict import build_sm_signal, decide
+from zalat.verdict import build_price_context, build_sm_signal, decide
 
 EXIT_OK, EXIT_UNEXPECTED, EXIT_CONFIG, EXIT_NOT_FOUND, EXIT_AUTH, EXIT_UNREACHABLE = 0, 1, 2, 3, 4, 5
 
 ClientFactory = Callable[[Settings], Any]          # returns an async context manager
 FngFetcher = Callable[[str, float], Awaitable[CrowdSignal]]
+# (symbol, key, base_url, timeout) -> SocialSignal
+SocialFetcher = Callable[[str | None, str | None, str, float], Awaitable[SocialSignal]]
 
 log = logging.getLogger("zalat")
 
@@ -60,9 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m zalat",
         description=(
-            "Contrast Nansen smart-money activity on a token with the crowd's mood "
-            "(Fear & Greed Index) and print a bilingual (English/Arabic) verdict. "
-            "Not financial advice."
+            "Contrast Nansen smart-money activity on a token with crowd sentiment and print "
+            "a bilingual (English/Arabic) verdict. Crowd = the token's social sentiment "
+            "(LunarCrush, only if LUNARCRUSH_API_KEY is set; needs a paid plan), otherwise the "
+            "market-wide mood (alternative.me Fear & Greed: whole crypto market, not "
+            "token-specific). Not financial advice."
         ),
     )
     p.add_argument("symbol", nargs="?", help="token symbol, e.g. PEPE (optional with --address)")
@@ -74,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="output language (default: both)")
     p.add_argument("--json", action="store_true", help="print machine-readable JSON")
     p.add_argument("--raw", action="store_true",
-                   help="also print the raw text of every Nansen tool call to stderr")
+                   help="also print the raw text of every Nansen tool call (and the LunarCrush status) to stderr")
     p.add_argument("--timeout", type=float, default=None,
                    help="network timeout in seconds (default: 30 or ZALAT_TIMEOUT)")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging (key redacted)")
@@ -92,8 +98,20 @@ def _reconfigure_streams() -> None:
 
 
 def _err(msg: str, settings: Settings | None = None) -> None:
-    secrets = [settings.api_key] if settings else None
+    secrets = settings.secrets() if settings else None
     print(redact(msg, secrets), file=sys.stderr)
+
+
+def _cancel(*tasks: asyncio.Future) -> None:
+    for task in tasks:
+        task.cancel()
+
+
+def _dump_social(sig: SocialSignal, settings: Settings) -> None:
+    detail = (f"sentiment={sig.sentiment} galaxy_score={sig.galaxy_score} "
+              f"price={sig.price_usd} pct_change_24h={sig.pct_change_24h}")
+    err = f" error={sig.error}" if sig.error else ""
+    _err(f"=== lunarcrush status={sig.status} http={sig.http_status} ===\n{detail}{err}\n", settings)
 
 
 def _dump_raw(res: ToolResult, settings: Settings) -> None:
@@ -106,11 +124,18 @@ async def run(
     settings: Settings,
     client_factory: ClientFactory = NansenMCPClient,
     fng_fetcher: FngFetcher | None = None,
+    social_fetcher: SocialFetcher | None = None,
 ) -> tuple[int, str]:
     """Do the work. Returns ``(exit_code, text_to_print_on_stdout)``."""
     fetch = fng_fetcher or (lambda url, timeout: fetch_fng(url, timeout))
-    # The crowd side is independent of Nansen, so fetch it concurrently.
-    crowd_task = asyncio.ensure_future(fetch(settings.fng_url, settings.timeout))
+    fetch_lc = social_fetcher or fetch_social
+    # Both sentiment sources are independent of Nansen: fetch them concurrently
+    # while the MCP session runs. Without LUNARCRUSH_API_KEY, fetch_social
+    # returns "not_configured" immediately and makes no request.
+    market_task = asyncio.ensure_future(fetch(settings.fng_url, settings.timeout))
+    social_task = asyncio.ensure_future(fetch_lc(
+        args.symbol.upper() if args.symbol else None,
+        settings.lunarcrush_key, settings.lunarcrush_url, settings.timeout))
 
     chain = args.chain.strip().lower()
     token: TokenRef | None = None
@@ -123,6 +148,7 @@ async def run(
         token = TokenRef(symbol=sym, name="", address=addr, chain=chain)
 
     flow = buy = sell = None
+    ires: ToolResult | None = None
     try:
         async with client_factory(settings) as nc:
             if token is None:
@@ -130,7 +156,7 @@ async def run(
                 if args.raw:
                     _dump_raw(res, settings)
                 if token is None:
-                    crowd_task.cancel()
+                    _cancel(market_task, social_task)
                     if not res.ok and res.error_kind == "auth":
                         _err(f"Error: {auth_message()}", settings)
                         return EXIT_AUTH, ""
@@ -158,24 +184,34 @@ async def run(
             flow = extract_sm_flow(fres.text) if fres.ok else None
             buy = extract_side_volume(bres.text, "BUY") if bres.ok else None
             sell = extract_side_volume(sres.text, "SELL") if sres.ok else None
+            # Price context (optional): a failure here is harmless.
+            ires = await get_token_info(nc, token)
+            if args.raw:
+                _dump_raw(ires, settings)
     except NansenAuthError as exc:
-        crowd_task.cancel()
+        _cancel(market_task, social_task)
         _err(f"Error: {exc}", settings)
         return EXIT_AUTH, ""
     except NansenNetworkError as exc:
         if token is None:  # no --address and search never ran
-            crowd_task.cancel()
+            _cancel(market_task, social_task)
             _err(f"Error: Nansen MCP unreachable at {settings.mcp_url}: {exc}", settings)
             return EXIT_UNREACHABLE, ""
-        _err(f"Warning: Nansen MCP unreachable ({exc}); showing crowd mood only.", settings)
+        _err(f"Warning: Nansen MCP unreachable ({exc}); showing sentiment only.", settings)
 
-    crowd = await crowd_task
-    if not crowd.available:
-        log.debug("Fear & Greed unavailable: %s", crowd.error)
+    market, social = await asyncio.gather(market_task, social_task)
+    if not market.available:
+        log.debug("Fear & Greed unavailable: %s", market.error)
+    # Same symbol, different coin? Compare LunarCrush's price with Nansen's.
+    social = apply_price_guard(social, token.price_usd)
+    if args.raw:
+        _dump_social(social, settings)
+    info = extract_price_info(ires.text) if ires is not None and ires.ok else None
+    price = build_price_context(token, info, social)
     sm = build_sm_signal(flow, buy, sell, min_gross_usd=settings.min_gross_usd)
-    verdict = decide(token, args.period, sm, crowd)
+    verdict = decide(token, args.period, sm, market, social, price)
     out = render_json(verdict) if args.json else render_text(verdict, args.lang)
-    return EXIT_OK, redact(out, [settings.api_key])
+    return EXIT_OK, redact(out, settings.secrets())
 
 
 def main(
@@ -183,9 +219,10 @@ def main(
     *,
     client_factory: ClientFactory = NansenMCPClient,
     fng_fetcher: FngFetcher | None = None,
+    social_fetcher: SocialFetcher | None = None,
     env_file: str | None = ".env",
 ) -> int:
-    """CLI entry point. ``client_factory``/``fng_fetcher`` are injectable for tests."""
+    """CLI entry point. ``client_factory`` and the fetchers are injectable for tests."""
     _reconfigure_streams()
     parser = build_parser()
     try:
@@ -208,7 +245,7 @@ def main(
 
     if args.verbose:
         handler = logging.StreamHandler(sys.stderr)
-        handler.addFilter(_RedactFilter([settings.api_key]))
+        handler.addFilter(_RedactFilter(settings.secrets()))
         logging.basicConfig(level=logging.DEBUG, handlers=[handler], force=True)
         logging.getLogger("asyncio").setLevel(logging.INFO)
     # Never let HTTP libraries log request headers.
@@ -217,7 +254,7 @@ def main(
     logging.getLogger("mcp").setLevel(logging.ERROR)
 
     try:
-        code, out = asyncio.run(run(args, settings, client_factory, fng_fetcher))
+        code, out = asyncio.run(run(args, settings, client_factory, fng_fetcher, social_fetcher))
     except KeyboardInterrupt:
         return 130
     except Exception as exc:  # noqa: BLE001 - last-resort handler

@@ -8,15 +8,17 @@ Usage (from the repository root, with your key in .env)::
 
 For each token, in rounds, it calls ``general_search`` then
 ``token_recent_flows_summary`` for several lookback periods and
-``token_who_bought_sold`` for BUY and SELL, until at least ``--min-calls``
-calls were made. Everything happens in ONE MCP session with a small delay
-between calls. Failures never stop the run (except a rejected API key).
+``token_who_bought_sold`` for BUY and SELL, then ``token_info``, until at
+least ``--min-calls`` calls were made. Everything happens in ONE MCP session
+with a small delay between calls. Failures never stop the run (except a
+rejected API key). Only Nansen MCP calls are made and counted: this script
+never calls LunarCrush or the Fear & Greed API.
 
 Outputs:
     reports/stress_report.json   totals, per-tool success/failure/latency, error reasons
     reports/raw/<tool>_<token>[_<variant>].txt   raw text of the latest call of each kind
 
-The API key is never written to any file; the script double-checks that.
+API keys are never written to any file; the script double-checks that.
 """
 
 from __future__ import annotations
@@ -45,9 +47,10 @@ from zalat.nansen_mcp import (  # noqa: E402
     flows_args,
     parse_search_candidates,
     search_args,
+    token_info_args,
     who_bought_sold_args,
 )
-from zalat.parsing import extract_side_volume, extract_sm_flow  # noqa: E402
+from zalat.parsing import extract_price_info, extract_side_volume, extract_sm_flow  # noqa: E402
 
 DEFAULT_TOKENS = "PEPE,UNI,LINK,AAVE,SHIB,LDO,MKR,ARB,ONDO,ENA"
 RETRYABLE = {"network", "timeout"}
@@ -98,7 +101,7 @@ class StressRun:
         name = _safe(f"{res.tool}_{token}" + (f"_{variant}" if variant else "")) + ".txt"
         header = (f"# tool={res.tool} token={token} variant={variant or '-'} ok={res.ok} "
                   f"error_kind={res.error_kind} reason={res.reason} latency_ms={res.latency_ms:.0f}\n")
-        (self.raw_dir / name).write_text(redact(header + res.text, [self.settings.api_key]),
+        (self.raw_dir / name).write_text(redact(header + res.text, self.settings.secrets()),
                                          encoding="utf-8")
 
     async def call(self, tool: str, args: dict, token: str, variant: str = "") -> ToolResult:
@@ -165,6 +168,13 @@ class StressRun:
                     if r.ok:
                         key = "wbs_parsed" if extract_side_volume(r.text, side) else "wbs_unparsed"
                         self.parse_stats[key] += 1
+                if self.total >= min_calls:
+                    return
+                r = await self.call("token_info", token_info_args(token), sym)
+                if r.ok:
+                    price, change = extract_price_info(r.text)
+                    key = "token_info_parsed" if (price, change) != (None, None) else "token_info_unparsed"
+                    self.parse_stats[key] += 1
             if self.total == before:
                 break  # a full round made no calls (e.g. empty token list): don't spin forever
 
@@ -292,20 +302,20 @@ async def main(
     rep = run.report(meta)
     rep.update({
         "status": status,
-        "error": redact(error, [settings.api_key]) if error else None,
+        "error": redact(error, settings.secrets()) if error else None,
         "finished_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "duration_s": round(time.perf_counter() - t0, 2),
         "report_path": str(out_dir / "stress_report.json"),
     })
     report_path = out_dir / "stress_report.json"
     report_path.write_text(redact(json.dumps(rep, indent=2, ensure_ascii=False),
-                                  [settings.api_key]), encoding="utf-8")
+                                  settings.secrets()), encoding="utf-8")
 
     # Belt and braces: make sure the key did not end up in any written file.
     for f in [report_path, *sorted((out_dir / "raw").glob("*.txt"))]:
-        if settings.api_key and settings.api_key in f.read_text(encoding="utf-8"):
-            f.write_text(redact(f.read_text(encoding="utf-8"), [settings.api_key]), encoding="utf-8")
-            print(f"WARNING: redacted the API key from {f}", file=sys.stderr)
+        if any(k in f.read_text(encoding="utf-8") for k in settings.secrets()):
+            f.write_text(redact(f.read_text(encoding="utf-8"), settings.secrets()), encoding="utf-8")
+            print(f"WARNING: redacted an API key from {f}", file=sys.stderr)
 
     _print_summary(rep)
     return code

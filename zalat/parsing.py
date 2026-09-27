@@ -310,6 +310,65 @@ def extract_sm_flow(text: str) -> SmFlow | None:
 
 
 # --------------------------------------------------------------------------- #
+# Price context (token_info)
+# --------------------------------------------------------------------------- #
+_PRICE_INCLUDE = [["price", "usd"], ["current", "price"], ["price"]]
+_PRICE_EXCLUDE = ["change", "pct", "percent", "volume", "high", "low", "ath", "atl", "open", "close"]
+_CHANGE_INCLUDE = [["price", "change"], ["change", "24"], ["percent", "change"],
+                   ["pct", "change"], ["change"]]
+_CHANGE_EXCLUDE = ["volume", "holder", "liquidity", "market cap", "mcap", "flow"]
+
+
+def _price_from_dict(d: dict[str, Any]) -> tuple[float | None, float | None]:
+    cols = [k for k, v in d.items() if not isinstance(v, (dict, list))]
+    price_c = find_col(cols, _PRICE_INCLUDE, exclude=_PRICE_EXCLUDE)
+    change_c = find_col(cols, _CHANGE_INCLUDE, exclude=_CHANGE_EXCLUDE)
+    price = parse_number(d.get(price_c)) if price_c else None
+    change = parse_number(d.get(change_c)) if change_c else None
+    return (price if price is not None and price > 0 else None), change
+
+
+def _metric_value_table(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Turn a two-column "| Metric | Value |" table into one flat dict."""
+    if not rows or len(rows[0]) != 2:
+        return None
+    k_col, v_col = list(rows[0].keys())
+    return {str(r.get(k_col, "")): r.get(v_col) for r in rows}
+
+
+def extract_price_info(text: str) -> tuple[float | None, float | None]:
+    """Return ``(price_usd, change_pct)`` from a ``token_info`` payload.
+
+    Accepts a JSON object (possibly nested under ``data``), a list of rows,
+    a normal markdown table or a two-column "Metric | Value" table. Never
+    raises; anything unreadable gives ``(None, None)``.
+    """
+    try:
+        payload = unwrap_payload(text)
+        candidates: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            candidates.append(payload)
+            for v in payload.values():
+                if isinstance(v, dict):
+                    candidates.append(v)
+        rows = records_from(payload)
+        candidates.extend(rows[:1])
+        if isinstance(payload, str):
+            for table in parse_markdown_tables(payload):
+                kv = _metric_value_table(table)
+                if kv:
+                    candidates.append(kv)
+        price = change = None
+        for c in candidates:
+            p, ch = _price_from_dict(c)
+            price = price if price is not None else p
+            change = change if change is not None else ch
+        return price, change
+    except Exception:  # noqa: BLE001 - context data must never break a verdict
+        return None, None
+
+
+# --------------------------------------------------------------------------- #
 # Buy / sell side volume (token_who_bought_sold)
 # --------------------------------------------------------------------------- #
 @dataclass

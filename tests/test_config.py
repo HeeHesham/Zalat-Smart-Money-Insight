@@ -88,3 +88,40 @@ def test_min_gross_env(monkeypatch):
         monkeypatch.setenv("ZALAT_MIN_GROSS_USD", bad)
         with pytest.raises(ConfigError):
             load_settings(None)
+
+
+# ---- LunarCrush (optional) -------------------------------------------------------
+from tests.conftest import FAKE_LC_KEY  # noqa: E402
+from zalat.config import DEFAULT_LC_URL, Settings  # noqa: E402
+
+
+def test_lunarcrush_key_optional(monkeypatch):
+    monkeypatch.setenv("NANSEN_API_KEY", FAKE_KEY)
+    s = load_settings(None)
+    assert s.lunarcrush_key is None and s.lunarcrush_url == DEFAULT_LC_URL
+    assert s.secrets() == [FAKE_KEY]
+    for placeholder in ("", "  ", "your_key_here"):
+        monkeypatch.setenv("LUNARCRUSH_API_KEY", placeholder)
+        assert load_settings(None).lunarcrush_key is None  # never a ConfigError
+
+
+def test_lunarcrush_key_loaded_redacted_and_url_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("NANSEN_API_KEY", FAKE_KEY)
+    env = tmp_path / ".env"
+    env.write_text(f"LUNARCRUSH_API_KEY={FAKE_LC_KEY}\nLUNARCRUSH_URL=https://lc.example/api4/\n",
+                   encoding="utf-8")
+    s = load_settings(env)
+    assert s.lunarcrush_key == FAKE_LC_KEY and s.lunarcrush_url == "https://lc.example/api4"
+    assert s.secrets() == [FAKE_KEY, FAKE_LC_KEY]
+    assert FAKE_LC_KEY not in repr(s) and FAKE_KEY not in repr(s)
+    assert "lunarcrush_key='***'" in repr(s)
+    assert redact(f"a {FAKE_LC_KEY} b {FAKE_KEY}", s.secrets()) == "a *** b ***"
+
+
+def test_redact_default_pool_includes_lunarcrush_env(monkeypatch):
+    monkeypatch.setenv("LUNARCRUSH_API_KEY", "lc-only-in-env-123456")
+    assert "lc-only-in-env-123456" not in redact("x lc-only-in-env-123456 y")
+
+
+def test_settings_repr_without_lc_key():
+    assert "lunarcrush_key=None" in repr(Settings(api_key=FAKE_KEY))

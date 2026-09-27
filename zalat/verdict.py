@@ -12,11 +12,20 @@ Smart-money score ``s`` in [-1, 1] combines two parts:
   ``token_who_bought_sold`` (BUY and SELL calls).
 
 ``s`` is their weighted average (flow 0.6, buy/sell 0.4), re-normalised when
-only one part is available. The crowd score is ``c = (F&G - 50) / 50``.
+only one part is available. Only smart money sets the direction.
 
-The contrast matrix then turns (smart-money label, crowd bucket) into one of
-the verdict kinds. The two *disagreement* cells are the headline:
-smart money buying into fear, and smart money selling into greed.
+The *primary crowd* it is contrasted with is, in order of preference:
+
+1. token-specific social sentiment (LunarCrush, optional, paid plan):
+   ``c = (sentiment - 50) / 50``, buckets Very Bearish .. Very Bullish;
+2. the market-wide Fear & Greed Index (whole crypto market, BTC-centric,
+   NOT token-specific): ``c = (F&G - 50) / 50``. Verdicts based only on this
+   are capped at Medium confidence.
+
+The contrast matrix turns (smart-money label, crowd side) into one of the
+verdict kinds. The two *disagreement* cells are the headline: smart money
+buying into a bearish/fearful crowd, and selling into a bullish/greedy one.
+Price movement is context only (notes and confidence), never the kind.
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from zalat.fng import CrowdSignal, crowd_bucket  # noqa: F401 (re-exported)
+from zalat.lunarcrush import SocialSignal
 from zalat.nansen_mcp import TokenRef
 from zalat.parsing import BuySellSide, SmFlow
 
@@ -36,7 +46,6 @@ W_BS = 0.4
 SM_LABEL_THRESHOLD = 0.2   # >= +0.2 accumulating, <= -0.2 distributing
 SM_STRONG = 0.6            # |s| >= 0.6 strong, >= 0.2 moderate, else weak
 CONF_WEAK_SIGNAL = 0.4     # |s| below this downgrades confidence
-CROWD_DISAGREE_MIN = 0.1   # |c| must exceed this for a disagreement flag
 MIN_WALLETS = 3            # fewer smart wallets than this downgrades confidence
 DEFAULT_FLOW_SCALE = 1e5   # USD, used when gross in/out flow is unknown
 #: Below this much gross smart-money volume (USD) a part is scaled down
@@ -55,9 +64,14 @@ KINDS = (
 )
 #: The two headline "smart money vs crowd" cells of the matrix.
 DISAGREEMENT_KINDS = ("CONTRARIAN_BULLISH", "WARNING_BEARISH")
-FEAR_SIDE = {"Fear", "Extreme Fear"}
-GREED_SIDE = {"Greed", "Extreme Greed"}
+#: Crowd labels on the bearish ("fear") and bullish ("greed") side, for both
+#: the market-wide F&G buckets and the token social buckets.
+FEAR_SIDE = {"Fear", "Extreme Fear", "Bearish", "Very Bearish"}
+GREED_SIDE = {"Greed", "Extreme Greed", "Bullish", "Very Bullish"}
 _LEVELS = ["Low", "Medium", "High"]
+# Price context thresholds (24h change, percent).
+PRICE_MOVE_PCT = 3.0        # >= +3% Rising, <= -3% Falling, else Flat
+PRICE_VOLATILE_PCT = 20.0   # |change| >= 20% lowers confidence one level
 
 
 @dataclass
@@ -79,13 +93,26 @@ class SmartMoneySignal:
 
 
 @dataclass
+class PriceContext:
+    """Token price and its recent change (context only)."""
+
+    price_usd: float | None
+    change_pct: float | None
+    window: str = "24h"
+    #: Where change_pct came from: "nansen_token_info" | "lunarcrush" | None.
+    source: str | None = None
+    direction: str | None = None   # Rising | Falling | Flat | None
+
+
+@dataclass
 class Verdict:
     """Final result; rendered as text (EN/AR) or JSON."""
 
     token: TokenRef
     period: str
     sm: SmartMoneySignal
-    crowd: CrowdSignal
+    #: Fear & Greed: market-wide mood (whole crypto market), NOT token-specific.
+    market_mood: CrowdSignal
     kind: str
     divergence: float | None
     disagreement: bool
@@ -93,6 +120,63 @@ class Verdict:
     reasons: list[tuple[str, dict]]
     notes: list[tuple[str, dict]] = field(default_factory=list)
     generated_at: str = ""
+    social: SocialSignal | None = None
+    price: PriceContext | None = None
+    #: Which crowd the verdict contrasts with: "token_social" | "market_mood" | None.
+    crowd_source: str | None = None
+
+    @property
+    def crowd(self) -> CrowdSignal:
+        """Read-only alias of :attr:`market_mood` for older callers."""
+        return self.market_mood
+
+
+def crowd_side(label: str | None) -> int:
+    """-1 for a fearful/bearish crowd, +1 for greedy/bullish, 0 otherwise."""
+    if label in FEAR_SIDE:
+        return -1
+    if label in GREED_SIDE:
+        return 1
+    return 0
+
+
+def price_direction(change_pct: float | None) -> str | None:
+    """Rising / Falling / Flat from a percent change (None if unknown)."""
+    if change_pct is None:
+        return None
+    if change_pct >= PRICE_MOVE_PCT:
+        return "Rising"
+    if change_pct <= -PRICE_MOVE_PCT:
+        return "Falling"
+    return "Flat"
+
+
+def build_price_context(
+    token: TokenRef,
+    info: tuple[float | None, float | None] | None,
+    social: SocialSignal | None,
+) -> PriceContext | None:
+    """Merge price sources.
+
+    Price: Nansen search > Nansen token_info > LunarCrush. Change %: Nansen
+    token_info > LunarCrush (LunarCrush only when its signal is trusted, i.e.
+    status "ok"). Returns None when nothing is known.
+    """
+    info_price, info_change = info if info else (None, None)
+    lc_ok = social is not None and social.available
+    price = token.price_usd
+    if price is None:
+        price = info_price
+    if price is None and lc_ok:
+        price = social.price_usd
+    change, source = None, None
+    if info_change is not None:
+        change, source = info_change, "nansen_token_info"
+    elif lc_ok and social.pct_change_24h is not None:
+        change, source = social.pct_change_24h, "lunarcrush"
+    if price is None and change is None:
+        return None
+    return PriceContext(price, change, "24h", source, price_direction(change))
 
 
 def sm_label(score: float | None) -> str:
@@ -188,26 +272,39 @@ def build_sm_signal(
                             sm_label(score), sm_strength(score), wallets, reasons, small)
 
 
-def _classify(sm: SmartMoneySignal, crowd: CrowdSignal) -> str:
-    """The contrast matrix."""
+def _primary(market: CrowdSignal, social: SocialSignal | None
+             ) -> tuple[str | None, str | None, float | None]:
+    """(crowd_source, label, score) of the crowd we contrast with."""
+    if social is not None and social.available:
+        return "token_social", social.label, social.score
+    if market.available:
+        return "market_mood", market.label, market.score
+    return None, None, None
+
+
+def _classify(sm: SmartMoneySignal, source: str | None, label: str | None) -> str:
+    """The contrast matrix (only smart money sets the direction)."""
     if sm.label == "Unavailable":
         return "INSUFFICIENT_DATA"
-    if not crowd.available:
+    if source is None:
         return "SM_ONLY"
-    if sm.label == "Neutral" or crowd.label == "Neutral":
+    side = crowd_side(label)
+    if sm.label == "Neutral" or side == 0:
         return "NEUTRAL"
     if sm.label == "Accumulating":
-        return "CONTRARIAN_BULLISH" if crowd.label in FEAR_SIDE else "CONFIRMED_BULLISH"
+        return "CONTRARIAN_BULLISH" if side < 0 else "CONFIRMED_BULLISH"
     # Distributing
-    return "WARNING_BEARISH" if crowd.label in GREED_SIDE else "CONFIRMED_BEARISH"
+    return "WARNING_BEARISH" if side > 0 else "CONFIRMED_BEARISH"
 
 
-def _confidence(sm: SmartMoneySignal, crowd: CrowdSignal) -> tuple[str, list[tuple[str, dict]]]:
+def _confidence(sm: SmartMoneySignal, market: CrowdSignal, social: SocialSignal | None,
+                source: str | None, price: PriceContext | None
+                ) -> tuple[str, list[tuple[str, dict]]]:
     """Confidence level plus the reasons it was lowered."""
     reasons: list[tuple[str, dict]] = list(sm.unavailable_reasons)
-    if not crowd.available:
+    if source is None:
         reasons.append(("crowd_unavailable", {}))
-    if sm.score is None or not crowd.available:
+    if sm.score is None or source is None:
         return "Low", reasons
 
     parts = sum(x is not None for x in (sm.flow_score, sm.bs_score))
@@ -227,31 +324,60 @@ def _confidence(sm: SmartMoneySignal, crowd: CrowdSignal) -> tuple[str, list[tup
     if sm.small_volume:
         level -= 1
         reasons.append(("small_volume", {}))
-    if crowd.value is not None and 45 <= crowd.value <= 55:
+    if source == "market_mood" and market.value is not None and 45 <= market.value <= 55:
         level -= 1
         reasons.append(("crowd_neutral", {}))
+    if source == "token_social" and social is not None and social.label == "Mixed":
+        level -= 1
+        reasons.append(("social_neutral", {}))
+    if price is not None and price.change_pct is not None \
+            and abs(price.change_pct) >= PRICE_VOLATILE_PCT:
+        level -= 1
+        reasons.append(("price_volatile", {}))
+    # The market-wide mood says nothing about THIS token's crowd: never
+    # more than Medium confidence when it is the only crowd signal.
+    if source == "market_mood" and level > 1:
+        level = 1
+        reasons.append(("crowd_market_wide", {}))
     return _LEVELS[max(0, level)], reasons
 
 
-def decide(token: TokenRef, period: str, sm: SmartMoneySignal, crowd: CrowdSignal) -> Verdict:
-    """Produce the final :class:`Verdict`."""
-    kind = _classify(sm, crowd)
+_PRICE_NOTES = {
+    ("Accumulating", "Falling"): "accumulation_on_dip",
+    ("Accumulating", "Rising"): "buying_momentum",
+    ("Distributing", "Rising"): "distribution_into_strength",
+    ("Distributing", "Falling"): "exiting_weakness",
+}
+
+
+def decide(
+    token: TokenRef,
+    period: str,
+    sm: SmartMoneySignal,
+    market: CrowdSignal,
+    social: SocialSignal | None = None,
+    price: PriceContext | None = None,
+) -> Verdict:
+    """Produce the final :class:`Verdict`.
+
+    ``market`` is the Fear & Greed signal; ``social`` (optional) the token's
+    LunarCrush sentiment; ``price`` (optional) context for notes/confidence.
+    """
+    source, label, cscore = _primary(market, social)
+    kind = _classify(sm, source, label)
 
     divergence = None
-    disagreement = False
-    if sm.score is not None and crowd.available and crowd.score is not None:
+    if sm.score is not None and cscore is not None:
         # Positive divergence = smart money leans against the crowd.
-        divergence = sm.score * (-crowd.score)
-        disagreement = (
-            abs(sm.score) >= SM_LABEL_THRESHOLD
-            and abs(crowd.score) > CROWD_DISAGREE_MIN
-            and sm.score * crowd.score < 0
-        )
+        divergence = sm.score * (-cscore)
+    # The matrix already encodes the thresholds: |s| >= 0.2 and a crowd
+    # outside its neutral band (F&G 45-55, social 41-60) on the opposite side.
+    disagreement = kind in DISAGREEMENT_KINDS
 
-    confidence, reasons = _confidence(sm, crowd)
+    confidence, reasons = _confidence(sm, market, social, source, price)
 
     notes: list[tuple[str, dict]] = []
-    if kind == "CONFIRMED_BULLISH" and crowd.label == "Extreme Greed":
+    if kind == "CONFIRMED_BULLISH" and label in ("Extreme Greed", "Very Bullish"):
         notes.append(("crowded_trade", {}))
     if kind == "CONFIRMED_BEARISH":
         notes.append(("capitulation", {}))
@@ -262,10 +388,23 @@ def decide(token: TokenRef, period: str, sm: SmartMoneySignal, crowd: CrowdSigna
             notes.append(("lean_negative", {}))
     if kind == "SM_ONLY":
         notes.append(("sm_only", {}))
+    if price is not None and (key := _PRICE_NOTES.get((sm.label, price.direction or ""))):
+        notes.append((key, {}))
+    if social is not None and social.available and market.available \
+            and crowd_side(social.label) * crowd_side(market.label) < 0:
+        notes.append(("token_vs_market", {}))
+    if social is not None and not social.available:
+        params: dict = {"fallback": source == "market_mood"}
+        if social.http_status is not None and social.status == "not_authorized":
+            params["code"] = social.http_status
+        notes.append((f"social_status_{social.status}", params))
+    if source == "token_social" and not market.available:
+        notes.append(("market_unavailable", {}))
 
     return Verdict(
-        token=token, period=period, sm=sm, crowd=crowd, kind=kind,
+        token=token, period=period, sm=sm, market_mood=market, kind=kind,
         divergence=divergence, disagreement=disagreement,
         confidence=confidence, reasons=reasons, notes=notes,
         generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        social=social, price=price, crowd_source=source,
     )

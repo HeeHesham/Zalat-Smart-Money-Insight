@@ -187,3 +187,30 @@ def test_side_volume_prefers_usd_over_token_columns():
     assert extract_side_volume(md, "BUY").volume_usd == pytest.approx(1500)
     value_col = json.dumps({"data": [{"tradeValue": 250, "tokenAmount": 9e9}]})
     assert extract_side_volume(value_col, "SELL").volume_usd == pytest.approx(250)
+
+
+# ---- price context --------------------------------------------------------------------
+from zalat.parsing import extract_price_info  # noqa: E402
+
+
+def test_extract_price_info_markdown_metric_table():
+    price, change = extract_price_info(fixture_text("token_info_md.txt"))
+    assert price == pytest.approx(4e-06) and change == pytest.approx(-5.2)
+
+
+def test_extract_price_info_json():
+    price, change = extract_price_info(fixture_text("token_info.json"))
+    assert price == pytest.approx(7.85) and change == pytest.approx(12.5)
+    flat = json.dumps({"price_usd": 2.0, "percent_change_24h": -1.5, "volume_24h_usd": 1e6})
+    assert extract_price_info(flat) == (2.0, -1.5)
+
+
+def test_extract_price_info_row_table():
+    md = "| Symbol | Price USD | Price Change 24h | Volume 24h USD |\n|--|--|--|--|\n| UNI | $7.85 | +3.1% | 180M |"
+    assert extract_price_info(md) == (pytest.approx(7.85), pytest.approx(3.1))
+
+
+@pytest.mark.parametrize("text", ["", "garbage", fixture_text("nansen_error.txt"), "{}", "[1, 2]",
+                                  '{"data": {"price": "n/a"}}'])
+def test_extract_price_info_failure(text):
+    assert extract_price_info(text) == (None, None)

@@ -1,4 +1,4 @@
-"""Crowd mood from the alternative.me Crypto Fear & Greed Index.
+"""Market-wide mood from the alternative.me Crypto Fear & Greed Index.
 
 Important: this index is MARKET-WIDE and BTC-centric. It is not a per-token
 sentiment score; we use it as a proxy for how the crowd feels overall.
@@ -69,3 +69,7 @@ async def fetch_fng(url: str, timeout: float,
     finally:
         if own:
             await http.aclose()
+
+
+#: Clearer name: this signal is the MARKET-WIDE mood, not a token's crowd.
+MarketMood = CrowdSignal

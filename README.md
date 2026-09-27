@@ -4,38 +4,56 @@ A small command-line tool that asks one question about a crypto token:
 
 > **Is "smart money" doing the same thing as the crowd, or the opposite?**
 
-It compares:
+It compares **what smart money is doing with the token** (the primary signal) with **crowd sentiment**, adds **price
+context**, and prints a **verdict in English and Arabic**.
 
-1. **Smart money**: what wallets that Nansen labels as smart traders and funds did with the token recently (net
-   flows, and who bought vs. who sold). This data comes from **Nansen's MCP server**.
-2. **The crowd**: the [Crypto Fear & Greed Index](https://alternative.me/crypto/fear-and-greed-index/) from
-   alternative.me.
+### Data sources
 
-It then prints a **verdict in English and Arabic**.
+| Source | What it gives | Role | Needs |
+|---|---|---|---|
+| **Nansen** (MCP server) | Smart-money flows, and who bought or sold (wallets labelled Smart Trader or Fund), plus the token's price and 24h change | **Primary.** Only smart money sets the verdict's direction | A Nansen API key (**required**) |
+| **LunarCrush** (API v4) | **Token-specific** social sentiment (% of posts that are positive), Galaxy Score, 24h price change | **Preferred crowd signal** when available | `LUNARCRUSH_API_KEY` on a **paid** LunarCrush plan (**optional**) |
+| **alternative.me Fear & Greed** | Mood of the **whole crypto market** (mostly driven by BTC) | Crowd signal when LunarCrush is not available; otherwise secondary context | Nothing (free) |
+
+> **Important:** the Fear & Greed Index is **market-wide**. It is **not** sentiment about your token. Every line that
+> shows it says so, and a verdict based only on it is capped at **Medium** confidence.
+>
+> **LunarCrush is optional, and is future work unless you have a paid key.** The free "Hobby" tier has **no social
+> sentiment**, so without a paid key (or with no key) the tool skips LunarCrush entirely, makes **no** request to it, and
+> compares smart money with the market-wide mood instead. The output then includes this note:
+> *"Token social sentiment: not configured - needs a paid LunarCrush API plan (set LUNARCRUSH_API_KEY). Future work;
+> this verdict compares smart money with market-wide mood instead."*
 
 ### Why the contrast matters
 
 When smart money and the crowd agree, you rarely learn anything new: everyone is already on the same side of the trade.
 The interesting moments are when they **disagree**:
 
-- **Smart money buying while the crowd is fearful.** Experienced traders may be accumulating from panicking sellers.
-- **Smart money selling while the crowd is greedy.** Experienced traders may be taking profit from late buyers.
+- **Smart money buying while the crowd is bearish or fearful.** Experienced traders may be buying from sellers who
+  are panicking.
+- **Smart money selling while the crowd is bullish or greedy.** Experienced traders may be taking profit from late
+  buyers.
 
-This tool puts that disagreement in the headline.
+This tool puts that disagreement in the headline, and it always tells you **which** crowd it means: this token's own
+social crowd, or the overall market mood.
 
 ---
 
 ## Verdict types
 
+The verdict code is the same whichever crowd was used, but the headline names that crowd. For example: "Smart money is
+buying while this token's social crowd is bearish", or "Smart money is buying while the overall crypto market is
+fearful (market-wide mood, not this token)".
+
 | Verdict (code)       | English name           | الاسم بالعربية       | When                                                         |
 |----------------------|------------------------|----------------------|--------------------------------------------------------------|
-| `CONTRARIAN_BULLISH` | Contrarian Bullish     | صعود عكس الجمهور     | Smart money **accumulating** while the crowd is in **Fear / Extreme Fear**. Headline disagreement. |
-| `WARNING_BEARISH`    | Warning (Bearish)      | تحذير (هبوطي)        | Smart money **distributing** while the crowd is in **Greed / Extreme Greed**. Headline disagreement. |
-| `CONFIRMED_BULLISH`  | Confirmed Bullish      | صعود مؤكَّد           | Both bullish (smart money accumulating, crowd greedy). With Extreme Greed the tool adds a crowded-trade note. |
-| `CONFIRMED_BEARISH`  | Confirmed Bearish      | هبوط مؤكَّد           | Both bearish (smart money distributing, crowd fearful). The tool adds a possible-capitulation note. |
+| `CONTRARIAN_BULLISH` | Contrarian Bullish     | صعود عكس الجمهور     | Smart money **accumulating** while the crowd is **bearish / fearful**. Headline disagreement. |
+| `WARNING_BEARISH`    | Warning (Bearish)      | تحذير (هبوطي)        | Smart money **distributing** while the crowd is **bullish / greedy**. Headline disagreement. |
+| `CONFIRMED_BULLISH`  | Confirmed Bullish      | صعود مؤكَّد           | Both bullish. If the crowd is extremely optimistic, the tool adds a crowded-trade note. |
+| `CONFIRMED_BEARISH`  | Confirmed Bearish      | هبوط مؤكَّد           | Both bearish. The tool adds a possible-capitulation note. |
 | `NEUTRAL`            | Neutral                | محايد                | Smart money or the crowd has no clear direction. The tool also reports a mild lean if there is one. |
-| `INSUFFICIENT_DATA`  | Insufficient Data      | بيانات غير كافية     | Nansen data was unavailable or unreadable. The crowd mood is still shown. |
-| `SM_ONLY`            | Smart Money Only       | الأموال الذكية فقط   | The Fear & Greed Index could not be fetched, so the tool shows the smart-money reading alone. |
+| `INSUFFICIENT_DATA`  | Insufficient Data      | بيانات غير كافية     | Nansen data was unavailable or unreadable. The other signals are still shown. |
+| `SM_ONLY`            | Smart Money Only       | الأموال الذكية فقط   | Neither crowd signal could be fetched, so the tool shows the smart-money reading alone. |
 
 Every verdict comes with a **confidence** level (High / Medium / Low, مرتفعة / متوسطة / منخفضة) and a list of the
 reasons it was lowered.
@@ -127,6 +145,23 @@ variable wins:
 
 ---
 
+## Optional: LunarCrush key (token social sentiment)
+
+Skip this section if you don't have a **paid** LunarCrush plan. The free "Hobby" tier does not include social
+sentiment. Everything works without it: the verdict falls back to the market-wide Fear & Greed mood and says so.
+
+If you do have a paid key, add it to `.env`:
+
+```
+LUNARCRUSH_API_KEY=paste-your-lunarcrush-key-here
+```
+
+The key is sent only in an `Authorization: Bearer` header to LunarCrush, and it is removed from all output, just like
+the Nansen key. If LunarCrush rejects the key or your plan has no social data (HTTP 401/402/403), rate-limits you, or
+returns no sentiment, the verdict still renders. It uses the market-wide mood and adds a note explaining why.
+
+---
+
 ## Usage
 
 ```bash
@@ -146,7 +181,7 @@ python -m zalat PEPE --lang ar
 # Machine-readable JSON (for scripts / dashboards)
 python -m zalat PEPE --json
 
-# Debug: also print the raw text of every Nansen tool call to stderr
+# Debug: also print the raw text of every Nansen tool call (and the LunarCrush status) to stderr
 python -m zalat PEPE --raw
 
 # Save raw output to a file you can share (the key is never in it)
@@ -164,54 +199,99 @@ Other options: `--timeout 60` (network timeout in seconds), `-v` (debug log, key
 | 2 | Bad arguments, or `NANSEN_API_KEY` missing |
 | 3 | The search worked but found no token with that symbol on that chain (try `--address`) |
 | 4 | Nansen rejected the API key (HTTP 401/403) |
-| 5 | Nansen MCP server unreachable, or the token search call itself failed (with `--address`, an unreachable server gives a crowd-only verdict and exit 0) |
+| 5 | Nansen MCP server unreachable, or the token search call itself failed (with `--address`, an unreachable server gives a sentiment-only verdict and exit 0) |
+
+LunarCrush, Fear & Greed and `token_info` problems never change the exit code. They only mark that signal as unavailable.
 
 ---
 
 ## Sample output
 
-> **Illustrative only.** The numbers below are made up to show the format, and are not real market data.
+> **Illustrative only.** These numbers are made up to show the format, and are not real market data.
+
+**(a) Default: no LunarCrush key.** The crowd is the market-wide mood, and the output says so:
 
 ```text
 Zalat Smart Money Verdict
->>> DISAGREEMENT: SMART MONEY vs CROWD <<<
+>>> DISAGREEMENT: SMART MONEY vs OVERALL MARKET MOOD <<<
 Token: PEPE (Pepe) on ethereum, lookback 1d
 Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933
 ------------------------------------------------------------
-VERDICT: Smart money is buying into fear  [Contrarian Bullish]
-The crowd is fearful while smart-money wallets accumulate. This is the kind of disagreement worth a closer look.
-Disagreement: YES - smart money and the crowd point in opposite directions.
+VERDICT: Smart money is buying while the overall crypto market is fearful (market-wide mood, not this token)  [Contrarian Bullish]
+The whole crypto market is fearful while smart-money wallets accumulate this token. Worth a closer look, but the mood describes the market, not this token's own crowd.
+Disagreement: YES - smart money and the overall market mood point in opposite directions.
 
 Smart money: Accumulating (strong), score +0.64
   - Net flow: +$1.2M (in $1.5M / out $300.0k, 12 wallets)
   - Smart buyers vs sellers: $800.0k bought / $200.0k sold (score +0.60)
-Crowd mood: Extreme Fear (22/100) - market-wide Fear & Greed Index (BTC-centric), not token-specific
-Divergence score: +0.36 (positive = smart money leans against the crowd)
+Price: $0.000004 (-5.2% over 24h, source Nansen token_info)
+Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Extreme Fear (22/100) - alternative.me Fear & Greed
+Divergence score: +0.36 (positive = smart money leans against the overall market mood)
 
-Confidence: High
+Confidence: Medium
+Why:
+  - only the market-wide mood was available, not this token's own crowd (capped at Medium)
+
+Price context: price falling while smart money buys (accumulation on a dip).
+Token social sentiment: not configured - needs a paid LunarCrush API plan (set LUNARCRUSH_API_KEY). Future work; this verdict compares smart money with market-wide mood instead.
 
 Not financial advice. For research and education only.
 
 ============================================================
 
 حكم زلط للأموال الذكية
->>> تباين: الأموال الذكية عكس الجمهور <<<
+>>> تباين: الأموال الذكية عكس مزاج السوق العام <<<
 العملة: PEPE (Pepe) على شبكة ethereum، الفترة 1d
 العنوان: 0x6982508145454ce325ddbe47a25d4ec3d2311933
 ------------------------------------------------------------
-الحكم: الأموال الذكية تشتري وسط الخوف  [صعود عكس الجمهور]
-الجمهور خائف بينما محافظ الأموال الذكية تُجمِّع. هذا النوع من التباين يستحق نظرة أعمق.
-تباين: نعم - الأموال الذكية والجمهور في اتجاهين متعاكسين.
+الحكم: الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)  [صعود عكس الجمهور]
+سوق الكريبتو بأكمله خائف بينما محافظ الأموال الذكية تُجمِّع هذه العملة. يستحق نظرة أعمق، لكن المزاج يصف السوق وليس جمهور هذه العملة.
+تباين: نعم - الأموال الذكية ومزاج السوق العام في اتجاهين متعاكسين.
 
 الأموال الذكية: تجميع (قوي)، الدرجة +0.64
   - صافي التدفق: +$1.2M (وارد $1.5M / صادر $300.0k، 12 محفظة)
   - المشترون مقابل البائعين الأذكياء: شراء $800.0k / بيع $200.0k (الدرجة +0.60)
-مزاج الجمهور: خوف شديد (22/100) - مؤشر الخوف والطمع للسوق كله (يتمحور حول البيتكوين)، وليس خاصاً بهذه العملة
-درجة التباين: +0.36 (موجبة = الأموال الذكية عكس الجمهور)
+السعر: $0.000004 (-5.2% خلال 24h، المصدر Nansen token_info)
+مزاج السوق العام (سوق الكريبتو بأكمله، يتمحور حول البيتكوين؛ ليس خاصاً بـ PEPE (Pepe)): خوف شديد (22/100) - مؤشر الخوف والطمع alternative.me
+درجة التباين: +0.36 (موجبة = الأموال الذكية عكس مزاج السوق العام)
 
-الثقة: مرتفعة
+الثقة: متوسطة
+الأسباب:
+  - توفر مزاج السوق العام فقط وليس جمهور هذه العملة (الحد الأقصى: متوسطة)
+
+سياق السعر: السعر يهبط بينما الأموال الذكية تشتري (تجميع عند الانخفاض).
+المشاعر الاجتماعية الخاصة بالعملة: غير مُفعَّلة - تتطلب اشتراكاً مدفوعاً في LunarCrush (عيّن LUNARCRUSH_API_KEY). عمل مستقبلي؛ هذا الحكم يقارن الأموال الذكية بمزاج السوق العام بدلاً منها.
 
 ليست نصيحة مالية. للبحث والتعليم فقط.
+```
+
+**(b) With a paid LunarCrush key:** the token's own social crowd is the primary crowd, and the market-wide mood is
+shown as secondary context (English part only):
+
+```text
+Zalat Smart Money Verdict
+>>> DISAGREEMENT: SMART MONEY vs TOKEN'S SOCIAL CROWD <<<
+Token: PEPE (Pepe) on ethereum, lookback 1d
+Address: 0x6982508145454ce325ddbe47a25d4ec3d2311933
+------------------------------------------------------------
+VERDICT: Smart money is buying while this token's social crowd is bearish  [Contrarian Bullish]
+Social sentiment about this token is negative while smart-money wallets accumulate it. This is the kind of disagreement worth a closer look.
+Disagreement: YES - smart money and the token's social crowd point in opposite directions.
+
+Smart money: Accumulating (strong), score +0.64
+  - Net flow: +$1.2M (in $1.5M / out $300.0k, 12 wallets)
+  - Smart buyers vs sellers: $800.0k bought / $200.0k sold (score +0.60)
+Price: $0.000004 (-5.2% over 24h, source Nansen token_info)
+Token social sentiment (PEPE, LunarCrush): Bearish - 25% positive, Galaxy Score 65
+Secondary context - Market-wide mood (whole crypto market, BTC-centric; NOT specific to PEPE (Pepe)): Greed (72/100) - alternative.me Fear & Greed
+Divergence score: +0.32 (positive = smart money leans against the token's social crowd)
+
+Confidence: High
+
+Price context: price falling while smart money buys (accumulation on a dip).
+Note: this token's crowd diverges from the overall market mood.
+
+Not financial advice. For research and education only.
 ```
 
 > Arabic in the terminal: most modern terminals (Windows Terminal, macOS Terminal, iTerm2, GNOME Terminal) display it
@@ -221,52 +301,96 @@ Not financial advice. For research and education only.
 
 ## How the verdict is computed
 
-The tool makes these calls, all in **one MCP session**:
+The tool makes these Nansen calls, all in **one MCP session**:
 
 1. `general_search`: finds the token's contract address from its symbol. It needs an exact symbol match on your
-   chain, and if there are several it takes the one with the highest 24h volume. `--address` skips this step.
+   chain, and if there are several it takes the one with the highest 24h volume. It also records the live
+   **Price USD**. `--address` skips this step.
 2. `token_recent_flows_summary`: net flow of the **Smart Money** cohort over `--period`.
 3. `token_who_bought_sold` (BUY and SELL): USD volume bought and sold by wallets labelled *30D / 90D / 180D / All Time
    Smart Trader* and *Fund*. Any period up to `1d` uses the last day, and `7d` uses the last week.
+4. `token_info`: price and 24h change, for context only. If it fails, nothing else is affected.
 
-**Smart-money score** `s` (from -1 to +1):
+While these run, the tool fetches the Fear & Greed Index and, only if `LUNARCRUSH_API_KEY` is set, the token's
+LunarCrush data. Both run at the same time as the Nansen calls.
 
-- `flow_score = net_flow / (inflow + outflow)`, which is the share of smart-money volume that was net buying. It uses
-  the same -1 to +1 scale as the buy/sell part. If Nansen only reports the net figure, the tool uses
-  `tanh(net_flow / $100k)` instead.
+### 1. Smart-money score `s` (-1 to +1). This alone sets the direction
+
+- `flow_score = net_flow / (inflow + outflow)`, which is the share of smart-money volume that was net buying. If Nansen
+  only reports the net figure, the tool uses `tanh(net_flow / $100k)` instead.
 - `buy_sell_score = (bought - sold) / (bought + sold)`, using **USD** volume only. Columns in native token units are
   never added up as dollars. If there is no USD column, this part is marked unavailable.
 - **Minimum size:** both parts are multiplied by `min(1, gross / $10,000)`. For flows, gross is inflow + outflow; for
-  buy/sell, it is bought + sold. So $40 of one-sided "dust" scores about 0.004, not a strong +1.00. Below $10k the tool
-  also lowers confidence with the reason "small smart-money volume". You can change the threshold with
-  `ZALAT_MIN_GROSS_USD` (`0` turns the damping off). In the net-only fallback, `tanh` already shrinks small values.
+  buy/sell, it is bought + sold. So $40 of one-sided "dust" scores about 0.004, not +1.00. You can change the threshold
+  with `ZALAT_MIN_GROSS_USD` (`0` turns the damping off).
 - `s = 0.6 × flow_score + 0.4 × buy_sell_score`. If only one part is available, `s` is that part alone.
 - `s ≥ +0.2` means **Accumulating** and `s ≤ -0.2` means **Distributing**. Anything in between is **Neutral**.
   Strength is *strong* when `|s| ≥ 0.6`, *moderate* when `|s| ≥ 0.2`, and *weak* below that.
 
-**Crowd mood** comes from the Fear & Greed value `v` (0 to 100): 0–24 Extreme Fear, 25–44 Fear, 45–55 Neutral,
-56–75 Greed, 76–100 Extreme Greed. The crowd score is `c = (v - 50) / 50`. These buckets are this tool's own, so the
-label shown can differ slightly from the `value_classification` text on alternative.me's site. The JSON output
-includes both.
+### 2. Crowd signal: the primary one is picked in this order
 
-**Divergence** `= s × (−c)`. A positive value means smart money is leaning against the crowd. The tool flags a
-**disagreement** when `|s| ≥ 0.2`, the crowd is outside Neutral, and the two have opposite signs.
+| Priority | Source | Crowd score `c` | Buckets |
+|---|---|---|---|
+| 1 | LunarCrush token social sentiment `x` (% positive), when the status is OK | `(x - 50) / 50` | ≤20 Very Bearish, 21–40 Bearish, **41–60 Mixed (neutral)**, 61–79 Bullish, ≥80 Very Bullish |
+| 2 | Fear & Greed value `v` (**market-wide**) | `(v - 50) / 50` | 0–24 Extreme Fear, 25–44 Fear, **45–55 Neutral**, 56–75 Greed, 76–100 Extreme Greed |
+| – | neither available | – | verdict `SM_ONLY` |
 
-**Confidence** starts at High when both smart-money signals are available and at Medium when only one is. It drops one
-level for each of these: a weak signal (`|s| < 0.4`), net flow and buy/sell pointing in different directions, fewer
-than 3 smart wallets, smart-money volume under the minimum size, or a crowd value between 45 and 55. The wallet count comes from the flows summary. If that is
-missing, the tool uses the larger of the buyer and seller counts, which is a lower bound: a wallet can appear on both
-sides, so adding the two would double-count. It is Low whenever Nansen data or the Fear & Greed Index is
-unavailable. The reasons are printed under **Why:**.
+- "Bearish" and "Fear" count as the **bearish side**, and "Bullish" and "Greed" as the **bullish side**.
+- LunarCrush is not used if its price is more than 2× away from Nansen's search price. That usually means the same
+  ticker belongs to another coin, and the status is shown as `mismatch`.
+- When LunarCrush is the primary crowd, Fear & Greed is still shown as **secondary context**. If the two point in
+  opposite directions, the tool adds a note that this token's crowd diverges from the overall market mood.
+- The Fear & Greed buckets are this tool's own, so the label shown can differ slightly from the
+  `value_classification` text on alternative.me's site. The JSON output includes both.
 
-If one Nansen call fails or returns something the tool cannot read, you still get a verdict. That signal is marked
+### 3. The verdict matrix (thresholds)
+
+| Smart money \ Crowd | Bearish side | Neutral / Mixed | Bullish side |
+|---|---|---|---|
+| **Accumulating** (`s ≥ 0.2`) | `CONTRARIAN_BULLISH` (disagreement) | `NEUTRAL` | `CONFIRMED_BULLISH` |
+| **Neutral** | `NEUTRAL` | `NEUTRAL` | `NEUTRAL` |
+| **Distributing** (`s ≤ -0.2`) | `CONFIRMED_BEARISH` | `NEUTRAL` | `WARNING_BEARISH` (disagreement) |
+
+**Divergence** `= s × (−c)`, using the primary crowd. A positive value means smart money is leaning against the crowd.
+
+### 4. Price context (notes and confidence only, never the verdict)
+
+The tool takes the price from the Nansen search, then from `token_info`, then from LunarCrush. The 24h change comes
+from `token_info`, then from LunarCrush. A change of +3% or more is **Rising**, -3% or less is **Falling**, and anything
+else is Flat. The tool then adds one of these notes:
+
+| Smart money | Price Falling | Price Rising |
+|---|---|---|
+| Accumulating | accumulation on a dip | buying into momentum |
+| Distributing | exiting weakness | distribution into strength |
+
+### 5. Confidence
+
+Confidence starts at High when both smart-money parts are available, and at Medium when only one is. It drops one
+level for each of these:
+
+- a weak signal (`|s| < 0.4`)
+- net flow and buy/sell pointing in different directions
+- fewer than 3 smart wallets
+- smart-money volume under the minimum size
+- a crowd in its neutral band (F&G 45–55 or social 41–60)
+- a price move of 20% or more in 24h
+
+The wallet count comes from the flows summary. If that is missing, the tool uses the larger of the buyer and seller
+counts, which is a lower bound.
+
+When the only crowd signal is the **market-wide** mood, confidence is **capped at Medium**, because that mood does not
+describe this token's own crowd. Confidence is Low when Nansen data or every crowd signal is unavailable. The reasons
+are printed under **Why:**.
+
+If one call fails or returns something the tool cannot read, you still get a verdict. That signal is marked
 *unavailable* and confidence drops.
 
 ---
 
 ## Running the tests
 
-The tests are fully offline. They use a fake Nansen client and a fake Fear & Greed source, and any real network call
+The tests are fully offline. They use a fake Nansen client and fake Fear & Greed and LunarCrush sources, and any real network call
 fails the test.
 
 ```bash
@@ -303,7 +427,8 @@ The script exits with 0 when the target is reached, 1 when it is not, 2 for bad 
 key is rejected and 5 when Nansen is unreachable.
 
 For each token, in rounds, it runs `general_search`, then `token_recent_flows_summary` for the `1h`, `1d` and `7d`
-periods, then `token_who_bought_sold` for BUY and SELL. It stops once it reaches `--min-calls`. Network errors are
+periods, then `token_who_bought_sold` for BUY and SELL, then `token_info`. It stops once it reaches `--min-calls`.
+It counts **only Nansen MCP calls**, and it never calls LunarCrush or the Fear & Greed API. Network errors are
 retried up to 3 times, and each retry counts as a call. A rejected API key stops the run immediately.
 
 **Output** (the `reports/` folder is git-ignored):
@@ -336,6 +461,9 @@ Nansen MCP stress test - completed
 | `Token search failed (tool_error: ...)` (exit 5) | The `general_search` call failed on Nansen's side. Try again later, pass `--address <contract>`, or send the `--raw` output. |
 | `Could not find token` (exit 3) | Check the symbol and `--chain`, or pass `--address <contract>`. |
 | Verdict says `INSUFFICIENT_DATA`, or a signal is "unavailable" | A Nansen tool returned an error (e.g. `NANSEN_TOOL_ERROR ... unclassified_failure`) or an unexpected format. Run with `--raw` and **send the `--raw` output** (e.g. `python -m zalat PEPE --raw 2> raw_output.txt`) so the parsers can be tuned. The key is never included. |
+| "Token social sentiment: not configured" | Expected without `LUNARCRUSH_API_KEY`. The verdict uses the market-wide mood instead. Social sentiment needs a paid LunarCrush plan. |
+| "Token social sentiment: unavailable - key rejected or plan lacks social data (HTTP 402)" | Your LunarCrush key is wrong, or your plan (e.g. the free Hobby tier) has no social data. Remove the key or upgrade. |
+| "LunarCrush price does not match this token" | The ticker probably belongs to a different coin on LunarCrush, so the tool ignores it on purpose. |
 | Arabic looks broken | Use Windows Terminal (not the old console window), or a UTF-8 terminal on macOS/Linux. |
 
 Settings you can put in `.env` (or the environment):
@@ -347,19 +475,31 @@ NANSEN_API_KEY_HEADER=NANSEN-API-KEY            # header that carries the key (d
 ZALAT_TIMEOUT=30                                # seconds
 ZALAT_FNG_URL=https://api.alternative.me/fng/?limit=2   # Fear & Greed endpoint (default shown)
 ZALAT_MIN_GROSS_USD=10000                       # smart-money volume below this (USD) is scaled down; 0 = off
+LUNARCRUSH_API_KEY=...                          # optional, PAID plan only; unset = LunarCrush skipped
+LUNARCRUSH_URL=https://lunarcrush.com/api4      # LunarCrush API base (default shown)
 ```
 
 ---
 
-## Limitations (v1)
+## Limitations and future work
 
-- **Fear & Greed is market-wide.** It measures overall crypto sentiment and leans heavily on Bitcoin. It is **not**
-  sentiment about your specific token, and the output says so.
+- **Fear & Greed is market-wide.** It measures the mood of the whole crypto market and leans heavily on Bitcoin. It is
+  **not** sentiment about your token. The output says so on every line where it appears, and verdicts based only on
+  it are capped at Medium confidence.
+- **Token-specific social sentiment (LunarCrush) is future work unless you have a paid key.** The free Hobby tier has
+  no social sentiment. The LunarCrush field names come from its public docs and have not been verified against live
+  responses here, so they are parsed defensively. LunarCrush sentiment also tends to run high (often 60–85%), so its
+  buckets may need tuning.
+- Price change is always the **24h** window, whatever `--period` you choose for smart money.
 - The exact response formats of Nansen's data tools are not publicly documented, so the parsers are deliberately
   forgiving. If a format is not recognised, that signal shows as *unavailable* rather than a wrong number. Please
   share `--raw` output if this happens.
 - It analyses one token per run. There is no caching, history, backtesting, alerts or charts.
 - The thresholds and weights are simple heuristics, not a validated trading model.
+
+**ملاحظة بالعربية:** مؤشر الخوف والطمع يقيس مزاج سوق الكريبتو بأكمله (ويتمحور حول البيتكوين)، وليس خاصاً بعملتك.
+المشاعر الاجتماعية الخاصة بكل عملة عبر LunarCrush اختيارية وتتطلب اشتراكاً مدفوعاً؛ بدونها تعمل الأداة وتقارن
+الأموال الذكية بمزاج السوق العام، وهذا مُدرج كعمل مستقبلي.
 
 ---
 
