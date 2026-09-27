@@ -41,7 +41,9 @@ social crowd, or the overall market mood.
 
 ## Verdict types
 
-The verdict code is the same whichever crowd was used, but the headline names that crowd. For example: "Smart money is
+The verdict code is the same whichever crowd was used, but the headline names that crowd. In Arabic, the short name
+also changes on the market-wide path: `CONTRARIAN_BULLISH` becomes "صعود عكس مزاج السوق" and `WARNING_BEARISH` becomes
+"تحذير: بيع وسط طمع السوق". For example: "Smart money is
 buying while this token's social crowd is bearish", or "Smart money is buying while the overall crypto market is
 fearful (market-wide mood, not this token)".
 
@@ -171,7 +173,9 @@ python -m zalat PEPE
 # Choose chain and lookback period (5m, 1h, 6h, 12h, 1d, 7d)
 python -m zalat UNI --chain ethereum --period 7d
 
-# Skip the symbol search by giving the contract address directly
+# Skip the symbol search by giving the contract address directly.
+# Give the matching symbol too (here PEPE for the PEPE contract): it is used for the
+# display name and for LunarCrush. Without a symbol, LunarCrush is skipped.
 python -m zalat PEPE --address 0x6982508145454ce325ddbe47a25d4ec3d2311933
 
 # Only one language
@@ -244,14 +248,14 @@ Not financial advice. For research and education only.
 العملة: PEPE (Pepe) على شبكة ethereum، الفترة 1d
 العنوان: 0x6982508145454ce325ddbe47a25d4ec3d2311933
 ------------------------------------------------------------
-الحكم: الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)  [صعود عكس الجمهور]
+الحكم: الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله (مزاج السوق العام، وليس هذه العملة)  [صعود عكس مزاج السوق]
 سوق الكريبتو بأكمله خائف بينما محافظ الأموال الذكية تُجمِّع هذه العملة. يستحق نظرة أعمق، لكن المزاج يصف السوق وليس جمهور هذه العملة.
 تباين: نعم - الأموال الذكية ومزاج السوق العام في اتجاهين متعاكسين.
 
 الأموال الذكية: تجميع (قوي)، الدرجة +0.64
   - صافي التدفق: +$1.2M (وارد $1.5M / صادر $300.0k، 12 محفظة)
   - المشترون مقابل البائعين الأذكياء: شراء $800.0k / بيع $200.0k (الدرجة +0.60)
-السعر: $0.000004 (-5.2% خلال 24h، المصدر Nansen token_info)
+السعر: $0.000004 (-5.2% خلال 24 ساعة، المصدر Nansen token_info)
 مزاج السوق العام (سوق الكريبتو بأكمله، يتمحور حول البيتكوين؛ ليس خاصاً بـ PEPE (Pepe)): خوف شديد (22/100) - مؤشر الخوف والطمع alternative.me
 درجة التباين: +0.36 (موجبة = الأموال الذكية عكس مزاج السوق العام)
 
@@ -379,8 +383,9 @@ level for each of these:
 The wallet count comes from the flows summary. If that is missing, the tool uses the larger of the buyer and seller
 counts, which is a lower bound.
 
-When the only crowd signal is the **market-wide** mood, confidence is **capped at Medium**, because that mood does not
-describe this token's own crowd. Confidence is Low when Nansen data or every crowd signal is unavailable. The reasons
+When the only crowd signal is the **market-wide** mood, confidence **starts at Medium at most**, because that mood does
+not describe this token's own crowd. The reason "only the market-wide mood was available" is always listed. The ceiling
+applies **before** the penalties, so a market-only verdict with any penalty above ends up **Low**. Confidence is Low when Nansen data or every crowd signal is unavailable. The reasons
 are printed under **Why:**.
 
 If one call fails or returns something the tool cannot read, you still get a verdict. That signal is marked
@@ -487,10 +492,15 @@ LUNARCRUSH_URL=https://lunarcrush.com/api4      # LunarCrush API base (default s
   **not** sentiment about your token. The output says so on every line where it appears, and verdicts based only on
   it are capped at Medium confidence.
 - **Token-specific social sentiment (LunarCrush) is future work unless you have a paid key.** The free Hobby tier has
-  no social sentiment. The LunarCrush field names come from its public docs and have not been verified against live
-  responses here, so they are parsed defensively. LunarCrush sentiment also tends to run high (often 60–85%), so its
+  no social sentiment. The LunarCrush field names **and formats** come from its public docs and have **not been
+  verified against live responses**, so they are parsed defensively:
+  - `sentiment` is expected as 0–100 (% positive). A value between 0 and 1 is treated as a fraction and multiplied by
+    100 (0.78 becomes 78%).
+  - `percent_change_24h` is assumed to already be a percent and is **not** rescaled. If LunarCrush returned it as a
+    fraction, the price notes would under-state the move. LunarCrush sentiment also tends to run high (often 60–85%), so its
   buckets may need tuning.
-- Price change is always the **24h** window, whatever `--period` you choose for smart money.
+- Price change is always the **24h** window, whatever `--period` you choose for smart money. Other windows reported
+  by Nansen (1h, 7d, 30d...) are ignored on purpose.
 - The exact response formats of Nansen's data tools are not publicly documented, so the parsers are deliberately
   forgiving. If a format is not recognised, that signal shows as *unavailable* rather than a wrong number. Please
   share `--raw` output if this happens.

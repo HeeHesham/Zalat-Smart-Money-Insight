@@ -8,7 +8,8 @@ compares smart money with the market-wide Fear & Greed mood instead.
 Endpoint (best effort; field names are parsed defensively)::
 
     GET {base}/public/coins/{coin}/v1     Authorization: Bearer <key>
-    -> {"data": {"sentiment": 0-100 (% positive), "galaxy_score": 0-100,
+    -> {"data": {"sentiment": 0-100 (% positive; a 0-1 fraction is scaled x100),
+                 "galaxy_score": 0-100,
                  "price": ..., "percent_change_24h": ..., ...}}
 
 :func:`fetch_social` never raises: every failure becomes a status.
@@ -95,6 +96,11 @@ def signal_from_data(symbol: str, data: Any) -> SocialSignal:
         price_usd=_field(d, "price", "price_usd"),
         pct_change_24h=_field(d, "percent_change_24h", "price_change_24h"),
     )
+    # Documented as 0-100 (% positive), but unverified live: if the API returns
+    # a 0-1 fraction (e.g. 0.78), scale it so it isn't read as 0.78%.
+    # (Exactly 0 stays 0; values in (0, 1] are treated as fractions.)
+    if sentiment is not None and 0 < sentiment <= 1:
+        sentiment *= 100
     if sentiment is None or not 0 <= sentiment <= 100:
         sig.status = "no_sentiment"
         return sig

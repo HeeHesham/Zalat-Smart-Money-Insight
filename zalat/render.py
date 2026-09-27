@@ -103,7 +103,7 @@ def _block(v: Verdict, lang: Lang) -> str:
     if p is not None:
         if p.change_pct is not None:
             lines.append(t("price_line", lang, price=fmt_price(p.price_usd),
-                           change=fmt_pct(p.change_pct), window=p.window,
+                           change=fmt_pct(p.change_pct), window=t(f"window_{p.window}", lang),
                            source=t(f"source_{p.source}", lang)))
         else:
             lines.append(t("price_line_no_change", lang, price=fmt_price(p.price_usd)))

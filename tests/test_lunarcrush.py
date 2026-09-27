@@ -115,3 +115,17 @@ def test_price_guard():
     assert apply_price_guard(ok, None).status == "ok"           # --address: no search price
     na = SocialSignal("no_sentiment", "PEPE", price_usd=1.0)
     assert apply_price_guard(na, 5.0) is na
+
+
+@pytest.mark.parametrize("raw, expected, label", [
+    (0.78, 78, "Bullish"),     # 0-1 fraction -> scaled x100
+    (1, 100, "Very Bullish"),
+    (0.2, 20, "Very Bearish"),
+    (0, 0, "Very Bearish"),    # exactly 0 stays 0
+    (78, 78, "Bullish"),       # already a percentage
+    ("0.35", 35, "Bearish"),
+])
+def test_sentiment_fraction_is_scaled(raw, expected, label):
+    sig = signal_from_data("PEPE", {"data": {"sentiment": raw, "percent_change_24h": 0.5}})
+    assert sig.status == "ok" and sig.sentiment == pytest.approx(expected) and sig.label == label
+    assert sig.pct_change_24h == 0.5  # change is never rescaled

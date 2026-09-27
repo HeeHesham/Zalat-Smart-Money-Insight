@@ -214,3 +214,27 @@ def test_extract_price_info_row_table():
                                   '{"data": {"price": "n/a"}}'])
 def test_extract_price_info_failure(text):
     assert extract_price_info(text) == (None, None)
+
+
+def test_extract_price_info_prefers_24h_change_over_other_windows():
+    js = json.dumps({"price": 1.2, "price_change_1h": 0.5, "price_change_24h": -4})
+    assert extract_price_info(js) == (pytest.approx(1.2), pytest.approx(-4))
+    p, ch = extract_price_info(fixture_text("token_info_windows.json"))
+    assert p == pytest.approx(0.85) and ch == pytest.approx(-7.5)
+
+
+@pytest.mark.parametrize("payload, change", [
+    ({"price": 1, "price_change_1h": 0.5, "price_change_7d": 9}, None),   # no 24h -> None
+    ({"price": 1, "priceChange5m": 1, "priceChange": 2.5}, 2.5),          # window-less fallback
+    ({"price": 1, "change_1d": -3.3, "change_30d": 40}, -3.3),
+    ({"price": 1, "percent_change_24h": 6.1, "volume_change_24h": 99}, 6.1),
+])
+def test_extract_price_info_window_rules(payload, change):
+    got = extract_price_info(json.dumps(payload))[1]
+    assert got == (pytest.approx(change) if change is not None else None)
+
+
+def test_extract_price_info_markdown_with_several_windows():
+    md = ("| Metric | Value |\n|--|--|\n| Price USD | $0.85 |\n| Price Change 1h | +0.4% |\n"
+          "| Price Change 24h | -7.5% |\n| Price Change 7d | +12% |")
+    assert extract_price_info(md) == (pytest.approx(0.85), pytest.approx(-7.5))

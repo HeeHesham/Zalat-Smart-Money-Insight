@@ -111,12 +111,12 @@ KIND_TEXT: dict[str, dict[str, dict[str, tuple[str, str, str]]]] = {
             **_SHARED["ar"],
         },
         "market_mood": {
-            "CONTRARIAN_BULLISH": ("صعود عكس الجمهور",
+            "CONTRARIAN_BULLISH": ("صعود عكس مزاج السوق",
                                    "الأموال الذكية تشتري بينما يسود الخوف سوق الكريبتو بأكمله "
                                    "(مزاج السوق العام، وليس هذه العملة)",
                                    "سوق الكريبتو بأكمله خائف بينما محافظ الأموال الذكية تُجمِّع هذه "
                                    "العملة. يستحق نظرة أعمق، لكن المزاج يصف السوق وليس جمهور هذه العملة."),
-            "WARNING_BEARISH": ("تحذير (هبوطي)",
+            "WARNING_BEARISH": ("تحذير: بيع وسط طمع السوق",
                                 "الأموال الذكية تبيع بينما يسيطر الطمع على سوق الكريبتو بأكمله "
                                 "(مزاج السوق العام، وليس هذه العملة)",
                                 "يسيطر الطمع على سوق الكريبتو بأكمله بينما محافظ الأموال الذكية "
@@ -203,7 +203,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "crowd_market_wide": "only the market-wide mood was available, not this token's own crowd (capped at Medium)",
         "price_volatile": "price moved 20% or more in 24h (volatile)",
         # notes
-        "crowded_trade": "Note: extreme optimism - this may be a crowded trade.",
+        "crowded_trade": "Note: extreme optimism about this token - this may be a crowded trade.",
+        "crowded_trade_market": "Note: the whole crypto market is in Extreme Greed (market-wide) - trades may be crowded.",
+        "window_24h": "24h",
         "capitulation": "Note: both sides bearish - can indicate capitulation.",
         "lean_positive": "Mild lean: smart money slightly positive.",
         "lean_negative": "Mild lean: smart money slightly negative.",
@@ -264,7 +266,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "social_neutral": "المشاعر الاجتماعية تجاه العملة متباينة (41-60% إيجابية)",
         "crowd_market_wide": "توفر مزاج السوق العام فقط وليس جمهور هذه العملة (الحد الأقصى: متوسطة)",
         "price_volatile": "تحرك السعر 20% أو أكثر خلال 24 ساعة (تقلب مرتفع)",
-        "crowded_trade": "ملاحظة: تفاؤل مفرط - قد تكون صفقة مزدحمة.",
+        "crowded_trade": "ملاحظة: تفاؤل مفرط تجاه هذه العملة - قد تكون صفقة مزدحمة.",
+        "crowded_trade_market": "ملاحظة: سوق الكريبتو بأكمله في حالة طمع شديد (مزاج السوق العام) - قد تكون الصفقات مزدحمة.",
+        "window_24h": "24 ساعة",
         "capitulation": "ملاحظة: الطرفان متشائمان - قد يدل ذلك على استسلام البائعين.",
         "lean_positive": "ميل طفيف: الأموال الذكية إيجابية قليلاً.",
         "lean_negative": "ميل طفيف: الأموال الذكية سلبية قليلاً.",

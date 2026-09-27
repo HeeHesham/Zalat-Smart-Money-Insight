@@ -143,7 +143,7 @@ def test_no_dead_i18n_keys():
     root = pathlib.Path(__file__).resolve().parent.parent / "zalat"
     code = "".join(p.read_text(encoding="utf-8") for p in root.glob("*.py") if p.name != "i18n.py")
     # Keys built dynamically in code (f-strings / t() internals):
-    dynamic = ("source_", "social_status_", "crowd_name_")
+    dynamic = ("source_", "social_status_", "crowd_name_", "window_")
     internal = {"fallback_clause"}
     for key in STRINGS["en"]:
         if key.startswith(dynamic) or key in internal:
@@ -277,7 +277,9 @@ def test_price_lines():
     en = render_text(v, "en")
     assert "Price: $0.000004 (-5.2% over 24h, source Nansen token_info)" in en
     assert "price falling while smart money buys" in en
-    assert "السعر: $0.000004 (-5.2% خلال 24h، المصدر Nansen token_info)" in render_text(v, "ar")
+    ar = render_text(v, "ar")
+    assert "السعر: $0.000004 (-5.2% خلال 24 ساعة، المصدر Nansen token_info)" in ar
+    assert "24h" not in ar
     v2 = _v2(price=PriceContext(4e-06, None, "24h", None, None))
     assert "Price: $0.000004 (24h change unavailable)" in render_text(v2, "en")
     assert "Price:" not in render_text(_v2(price=None), "en")
@@ -303,3 +305,26 @@ def test_json_price_null_and_social_not_configured():
     data = json.loads(render_json(_v2(social=_social(status="not_configured"))))
     assert data["price"] is None and data["social"]["status"] == "not_configured"
     assert data["social"]["sentiment"] is None
+
+
+def test_crowded_trade_market_variant_text():
+    v = decide(TOK, "1d", build_sm_signal(SmFlow(1.2e6, 1.5e6, 3e5, 12, {}), None, None),
+               signal_from_value(90))
+    en, ar = render_text(v, "en"), render_text(v, "ar")
+    assert ("Note: the whole crypto market is in Extreme Greed (market-wide) - "
+            "trades may be crowded.") in en
+    assert "سوق الكريبتو بأكمله في حالة طمع شديد" in ar
+    assert "extreme optimism about this token" not in en
+
+
+def test_arabic_short_names_depend_on_crowd_source():
+    assert kind_text("CONTRARIAN_BULLISH", "ar", "market_mood")[0] == "صعود عكس مزاج السوق"
+    assert kind_text("WARNING_BEARISH", "ar", "market_mood")[0] == "تحذير: بيع وسط طمع السوق"
+    assert kind_text("CONTRARIAN_BULLISH", "ar", "token_social")[0] == "صعود عكس الجمهور"
+    assert kind_text("WARNING_BEARISH", "ar", "token_social")[0] == "تحذير (هبوطي)"
+    for source in ("market_mood",):
+        for kind in ("CONTRARIAN_BULLISH", "WARNING_BEARISH", "CONFIRMED_BULLISH",
+                     "CONFIRMED_BEARISH", "NEUTRAL"):
+            assert "الجمهور" not in kind_text(kind, "ar", source)[0]
+    out = render_text(_v2(fng=20), "ar")
+    assert "[صعود عكس مزاج السوق]" in out

@@ -16,6 +16,7 @@ import asyncio
 import logging
 import sys
 import traceback
+from urllib.parse import quote
 from typing import Any, Awaitable, Callable
 
 from zalat import __version__
@@ -108,7 +109,11 @@ def _cancel(*tasks: asyncio.Future) -> None:
 
 
 def _dump_social(sig: SocialSignal, settings: Settings) -> None:
-    detail = (f"sentiment={sig.sentiment} galaxy_score={sig.galaxy_score} "
+    # The requested path (never the key: it only travels in a header).
+    path = (f"GET {settings.lunarcrush_url}/public/coins/{quote(sig.symbol.lower(), safe='')}/v1"
+            if settings.lunarcrush_key and sig.symbol else "no request made")
+    detail = (f"{path}\n"
+              f"sentiment={sig.sentiment} galaxy_score={sig.galaxy_score} "
               f"price={sig.price_usd} pct_change_24h={sig.pct_change_24h}")
     err = f" error={sig.error}" if sig.error else ""
     _err(f"=== lunarcrush status={sig.status} http={sig.http_status} ===\n{detail}{err}\n", settings)

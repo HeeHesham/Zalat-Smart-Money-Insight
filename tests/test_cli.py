@@ -403,3 +403,17 @@ def test_early_exit_cancels_sentiment_tasks(key, capsys):
     code = main(["NOPE"], client_factory=fake.factory, fng_fetcher=never,
                 social_fetcher=never, env_file=None)
     assert code == 3
+
+
+def test_raw_lunarcrush_dump_shows_path_not_key(key, capsys, monkeypatch):
+    monkeypatch.setenv("LUNARCRUSH_API_KEY", FAKE_LC_KEY)
+    cli2(["PEPE", "--raw"], social=social_const(sentiment=25))
+    err = capsys.readouterr().err
+    assert "GET https://lunarcrush.com/api4/public/coins/pepe/v1" in err
+    assert FAKE_LC_KEY not in err
+
+
+def test_raw_lunarcrush_dump_without_key_says_no_request(key, capsys):
+    cli2(["PEPE", "--raw"])
+    err = capsys.readouterr().err
+    assert "=== lunarcrush status=not_configured" in err and "no request made" in err

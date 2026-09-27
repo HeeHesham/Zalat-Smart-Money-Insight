@@ -153,12 +153,18 @@ def test_confidence_downgrades_accumulate_to_low():
 
 
 def test_confidence_one_downgrade():
-    v = decide(TOK, "1d", sm(0.3), signal_from_value(20))
+    # With token social: High -> Medium for one penalty.
+    v = decide(TOK, "1d", sm(0.3), signal_from_value(20), social_sig(20))
     assert v.confidence == "Medium" and [k for k, _ in v.reasons] == ["weak_signal"]
+    # Market-only: the Medium ceiling applies first, so one penalty -> Low.
+    v2 = decide(TOK, "1d", sm(0.3), signal_from_value(20))
+    assert v2.confidence == "Low"
+    assert [k for k, _ in v2.reasons] == ["crowd_market_wide", "weak_signal"]
 
 
 def test_notes():
-    assert ("crowded_trade", {}) in decide(TOK, "1d", sm(0.7), signal_from_value(90)).notes
+    market_greed = decide(TOK, "1d", sm(0.7), signal_from_value(90)).notes
+    assert ("crowded_trade_market", {}) in market_greed and ("crowded_trade", {}) not in market_greed
     assert ("capitulation", {}) in decide(TOK, "1d", sm(-0.7), signal_from_value(10)).notes
     assert ("lean_positive", {}) in decide(TOK, "1d", sm(0.1), signal_from_value(20)).notes
     assert ("lean_negative", {}) in decide(TOK, "1d", sm(-0.1), signal_from_value(20)).notes
@@ -226,9 +232,11 @@ def test_tanh_fallback_small_net_flags_small_volume():
 def test_small_volume_downgrades_confidence():
     s = build_sm_signal(SmFlow(8_000, 8_000, 0, 20), BuySellSide(8_000, 5), BuySellSide(0, 0))
     assert s.score == pytest.approx(0.8) and s.small_volume
-    v = decide(TOK, "1d", s, signal_from_value(15))
+    v = decide(TOK, "1d", s, signal_from_value(15), social_sig(15))
     assert v.kind == "CONTRARIAN_BULLISH"
     assert ("small_volume", {}) in v.reasons and v.confidence == "Medium"
+    market_only = decide(TOK, "1d", s, signal_from_value(15))
+    assert market_only.confidence == "Low"
 
 
 # ======================= Sprint 2: merged crowd model ===================================
@@ -312,10 +320,18 @@ def test_social_neutral_reason_and_market_neutral_not_used_when_social_primary()
     assert "social_neutral" in keys and "crowd_neutral" not in keys
 
 
-def test_crowd_market_wide_only_when_it_lowers():
-    v = decide(TOK, "1d", sm(0.3), signal_from_value(20))  # already Medium
-    assert v.confidence == "Medium"
-    assert ("crowd_market_wide", {}) not in v.reasons
+def test_crowd_market_wide_is_a_ceiling_applied_before_penalties():
+    # Always listed when the market mood is the crowd, even if already Medium.
+    one_part = decide(TOK, "1d", sm(0.7, bs_score=None), signal_from_value(20))
+    assert one_part.confidence == "Medium"
+    assert [k for k, _ in one_part.reasons] == ["one_sm_part", "crowd_market_wide"]
+    # Market-only + any penalty -> Low (the penalty is not absorbed by the cap).
+    for kw in ({"wallets": 2}, {"flow_score": 0.8, "bs_score": -0.1}):
+        v = decide(TOK, "1d", sm(0.7, **kw), signal_from_value(20))
+        assert v.confidence == "Low" and ("crowd_market_wide", {}) in v.reasons
+    # Never listed when token social is the crowd.
+    assert ("crowd_market_wide", {}) not in \
+        decide(TOK, "1d", sm(0.7), signal_from_value(20), social_sig(20)).reasons
 
 
 def test_token_vs_market_note():

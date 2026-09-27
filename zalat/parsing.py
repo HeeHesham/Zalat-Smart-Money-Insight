@@ -314,15 +314,44 @@ def extract_sm_flow(text: str) -> SmFlow | None:
 # --------------------------------------------------------------------------- #
 _PRICE_INCLUDE = [["price", "usd"], ["current", "price"], ["price"]]
 _PRICE_EXCLUDE = ["change", "pct", "percent", "volume", "high", "low", "ath", "atl", "open", "close"]
-_CHANGE_INCLUDE = [["price", "change"], ["change", "24"], ["percent", "change"],
-                   ["pct", "change"], ["change"]]
 _CHANGE_EXCLUDE = ["volume", "holder", "liquidity", "market cap", "mcap", "flow"]
+# Words that make a column a price-change column.
+_CHANGE_WORDS = ("change", "chg")
+# Windows we want (24h / 1d) and windows we must NOT use (1h, 7d...).
+_WANTED_WINDOW = re.compile(r"\b(24 ?h|1 ?d|24 ?hours?|day|daily)\b")
+_OTHER_WINDOW = re.compile(r"\b(\d+ ?(m|min|h|d|w|y)|\d+ ?(hours?|days?|weeks?)|week|month|year|ytd)\b")
+
+
+def _norm_window(n: str) -> str:
+    """"price change24h" -> "price change 24h" so window tokens are separate words."""
+    return re.sub(r"([a-z])(\d)", r"\1 \2", n)
+
+
+def pick_change_col(cols: Iterable[str]) -> str | None:
+    """Choose the 24h price-change column.
+
+    Prefer a column that names a 24h / 1d window. Columns naming any other
+    window (1h, 5m, 6h, 12h, 7d, 30d...) are never used. As a fallback, accept
+    a change column with no window at all (e.g. "Price Change").
+    """
+    windowless: str | None = None
+    for col in cols:
+        n = _norm_window(norm(col))
+        if not any(w in n for w in _CHANGE_WORDS) or any(e in n for e in _CHANGE_EXCLUDE):
+            continue
+        if _WANTED_WINDOW.search(n):
+            return col
+        if _OTHER_WINDOW.search(n):
+            continue
+        if windowless is None:
+            windowless = col
+    return windowless
 
 
 def _price_from_dict(d: dict[str, Any]) -> tuple[float | None, float | None]:
     cols = [k for k, v in d.items() if not isinstance(v, (dict, list))]
     price_c = find_col(cols, _PRICE_INCLUDE, exclude=_PRICE_EXCLUDE)
-    change_c = find_col(cols, _CHANGE_INCLUDE, exclude=_CHANGE_EXCLUDE)
+    change_c = pick_change_col(cols)
     price = parse_number(d.get(price_c)) if price_c else None
     change = parse_number(d.get(change_c)) if change_c else None
     return (price if price is not None and price > 0 else None), change

@@ -311,6 +311,11 @@ def _confidence(sm: SmartMoneySignal, market: CrowdSignal, social: SocialSignal 
     level = 2 if parts == 2 else 1  # High with both parts, Medium with one
     if parts == 1:
         reasons.append(("one_sm_part", {}))
+    # The market-wide mood says nothing about THIS token's crowd, so it sets a
+    # ceiling of Medium *before* any penalty: market-only + any penalty = Low.
+    if source == "market_mood":
+        level = min(level, 1)
+        reasons.append(("crowd_market_wide", {}))
     if abs(sm.score) < CONF_WEAK_SIGNAL:
         level -= 1
         reasons.append(("weak_signal", {"s": sm.score}))
@@ -334,11 +339,6 @@ def _confidence(sm: SmartMoneySignal, market: CrowdSignal, social: SocialSignal 
             and abs(price.change_pct) >= PRICE_VOLATILE_PCT:
         level -= 1
         reasons.append(("price_volatile", {}))
-    # The market-wide mood says nothing about THIS token's crowd: never
-    # more than Medium confidence when it is the only crowd signal.
-    if source == "market_mood" and level > 1:
-        level = 1
-        reasons.append(("crowd_market_wide", {}))
     return _LEVELS[max(0, level)], reasons
 
 
@@ -377,8 +377,11 @@ def decide(
     confidence, reasons = _confidence(sm, market, social, source, price)
 
     notes: list[tuple[str, dict]] = []
-    if kind == "CONFIRMED_BULLISH" and label in ("Extreme Greed", "Very Bullish"):
+    if kind == "CONFIRMED_BULLISH" and label == "Very Bullish":
         notes.append(("crowded_trade", {}))
+    elif kind == "CONFIRMED_BULLISH" and label == "Extreme Greed":
+        # Market-wide variant: it is the whole market that is euphoric.
+        notes.append(("crowded_trade_market", {}))
     if kind == "CONFIRMED_BEARISH":
         notes.append(("capitulation", {}))
     if kind == "NEUTRAL" and sm.score is not None:
