@@ -161,7 +161,9 @@ def _e(x: Any) -> str:
 
 #: A run of left-to-right material inside Arabic text (numbers, $ amounts,
 #: dates, Latin names), ASCII only so Arabic letters are never swallowed.
-_LTR_TOKEN = r"[+\-−]?\$?[0-9A-Za-z_][0-9A-Za-z_.,:%/$…\-]*"
+# A run never ends in "." / "," / ":" so sentence punctuation stays with the
+# Arabic text ("... alternative.me." keeps its final period in the RTL flow).
+_LTR_TOKEN = r"[+\-−]?\$?[0-9A-Za-z_](?:[0-9A-Za-z_.,:%/$…\-]*[0-9A-Za-z_%$…])?"
 _LTR_PAREN = r"(?:\s*\([0-9A-Za-z_$][0-9A-Za-z_ .,:%/$…\-]*\))?"   # "ChainLink (LINK)"
 _LTR_RUN = re.compile(rf"{_LTR_TOKEN}{_LTR_PAREN}(?:\s+{_LTR_TOKEN}{_LTR_PAREN})*")
 
@@ -335,9 +337,11 @@ def net_bar(sm: SmartMoneySignal, lang: str) -> str:
         f'<div class="chart" data-k="net">'
         f'<div class="chart-h"><span class="lbl">{_tx(ct("net_title", lang), lang)}</span>'
         f'<b class="val num"{_num_attrs(value)}>{_tx(value, lang)}</b></div>'
-        f'<div class="mirror">{svg}</div>'
-        f'<div class="ends sub ticks">' + "".join(f"<span>{_tx(t_, lang)}</span>" for t_ in ticks)
-        + "</div>" + _table(ct("net_title", lang), [(ct("net_title", lang), value)], lang) + "</div>")
+        # A number line: always left-to-right (negative left, positive right),
+        # also in Arabic; only the split bar mirrors.
+        f'<div class="axis-ltr" dir="ltr">{svg}'
+        f'<div class="ends sub ticks">' + "".join(f"<span>{_e(t_)}</span>" for t_ in ticks)
+        + "</div></div>" + _table(ct("net_title", lang), [(ct("net_title", lang), value)], lang) + "</div>")
 
 
 def gauge(value: float, size: str, kind: str, caption: str, lang: str) -> str:
@@ -603,6 +607,7 @@ body.bear{--tone:var(--t-bear)} body.bull{--tone:var(--t-bull)} body.neutral{--t
 .ends{display:flex;justify-content:space-between;font-size:13px;color:var(--ink-2);gap:10px}
 .ends b{color:var(--ink);font-size:15px}
 .ends.sub{font-size:12px;color:var(--muted)}
+.axis-ltr{direction:ltr;unicode-bidi:isolate}
 .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-inline:6px;vertical-align:-1px}
 .sw.buy{background:var(--buy)} .sw.sell{background:var(--sell)}
 svg{display:block}

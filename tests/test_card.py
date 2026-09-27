@@ -383,3 +383,15 @@ def test_cli_card_lang_option(tmp_path, capsys):
     code = main(["PEPE", "--html", str(target), "--card-lang", "ar"], client_factory=fake.factory,
                 fng_fetcher=fng_const(70), env_file=None)
     assert code == 0 and '<html lang="ar" dir="rtl">' in target.read_text(encoding="utf-8")
+
+
+def test_card_arabic_number_line_and_punctuation():
+    ar = _root(render_card(make()), "ar")
+    net = ar[ar.index('data-k="net"'):]
+    # the net-flow number line never mirrors: LTR container, ticks in -/0/+ order
+    assert '<div class="axis-ltr" dir="ltr">' in net
+    assert re.search(r'ticks"><span>-\$200\.0k</span><span>0</span><span>\+\$200\.0k</span>', net)
+    assert '<div class="mirror">' in ar[ar.index('data-k="split"'):ar.index('data-k="net"')]
+    # sentence punctuation stays outside the LTR isolate
+    assert '<bdi dir="ltr" class="nw">alternative.me</bdi>. ' in ar
+    assert _isolate_ltr("قيمة $1.2k, تقريباً") == 'قيمة <bdi dir="ltr" class="nw">$1.2k</bdi>, تقريباً'
